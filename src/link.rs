@@ -648,10 +648,17 @@ fn serve(world: Arc<Mutex<World>>) {
 }
 
 #[cfg(target_os = "macos")]
+fn accepted(stream: TcpStream) -> TcpStream {
+    let _ = stream.set_nonblocking(false);
+    stream
+}
+
+#[cfg(target_os = "macos")]
 fn accept_all(listener: &TcpListener, world: &Arc<Mutex<World>>) {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                let stream = accepted(stream);
                 let world = world.clone();
                 thread::spawn(move || handle_client(stream, world));
             }
@@ -961,5 +968,45 @@ fn computer_name() -> String {
         let bytes: *const c_char = msg_send![name, UTF8String];
         let text = c_string(bytes);
         if text.is_empty() { "Hop".into() } else { text }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{ErrorKind, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    use super::accepted;
+
+    #[test]
+    fn a_socket_from_the_listener_waits_for_the_rest_of_a_frame() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = loop {
+                match listener.accept() {
+                    Ok(pair) => break pair,
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(err) => panic!("{err}"),
+                }
+            };
+            let mut stream = accepted(stream);
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(400)));
+            crate::wire::read_frame(&mut stream)
+                .map(|_| ())
+                .map_err(|err| err.kind())
+        });
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client.write_all(&8u32.to_be_bytes()).unwrap();
+        let started = std::time::Instant::now();
+        let result = server.join().unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(300),
+            "the listener closed before the frame arrived: {result:?}"
+        );
     }
 }
