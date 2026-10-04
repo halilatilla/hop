@@ -68,12 +68,14 @@ pub fn after_ask(reply: Option<&str>) -> AskResult {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DropResult {
     Release,
     Stay(StayReason),
 }
 
+#[allow(dead_code)]
 pub fn after_drop(gone: bool) -> DropResult {
     if gone {
         DropResult::Release

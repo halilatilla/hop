@@ -102,7 +102,7 @@ fn on_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
 
     unsafe extern "C" {
         fn pthread_main_np() -> i32;
-        fn dispatch_get_main_queue() -> *mut std::ffi::c_void;
+        static _dispatch_main_q: std::ffi::c_void;
         fn dispatch_sync(queue: *mut std::ffi::c_void, block: *const std::ffi::c_void);
     }
 
@@ -120,7 +120,7 @@ fn on_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     let block = block.copy();
     unsafe {
         dispatch_sync(
-            dispatch_get_main_queue(),
+            &raw const _dispatch_main_q as *mut std::ffi::c_void,
             &*block as *const block::Block<(), ()> as *const std::ffi::c_void,
         );
     }
