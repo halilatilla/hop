@@ -11,23 +11,69 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, ClickEvent, Context, Entity, FocusHandle, FontWeight, Global, IntoElement, Render,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, rgb, size,
+    Subscription, TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowOptions, div,
+    point, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
 
 use bluetooth::PairedDevice;
 use menu_bar::MenuCommand;
 
-const INK: u32 = 0x171512;
-const PAPER: u32 = 0xf3eee6;
-const CARD: u32 = 0xfffbf6;
-const MUTED: u32 = 0xa89b8c;
-const MUTED_ON_INK: u32 = 0xc4b8aa;
-const LINE: u32 = 0xe4ddd4;
-const GOOD: u32 = 0x2f6f4e;
-const GOOD_WASH: u32 = 0xe3f0e8;
-const WASH: u32 = 0xf6e6d4;
-const WASH_INK: u32 = 0x6b4a24;
+#[derive(Clone, Copy)]
+struct Palette {
+    text: u32,
+    paper: u32,
+    card: u32,
+    muted: u32,
+    line: u32,
+    stroke: u32,
+    good: u32,
+    good_wash: u32,
+    wash: u32,
+    wash_ink: u32,
+    button_text: u32,
+}
+
+impl Palette {
+    fn light() -> Self {
+        Self {
+            text: 0x171512,
+            paper: 0xf3eee6,
+            card: 0xfffbf6,
+            muted: 0xa89b8c,
+            line: 0xe4ddd4,
+            stroke: 0xc4b8aa,
+            good: 0x2f6f4e,
+            good_wash: 0xe3f0e8,
+            wash: 0xf6e6d4,
+            wash_ink: 0x6b4a24,
+            button_text: 0xf3eee6,
+        }
+    }
+
+    fn dark() -> Self {
+        Self {
+            text: 0xf4efe8,
+            paper: 0x1c1916,
+            card: 0x28241f,
+            muted: 0xb7aa9c,
+            line: 0x3c362f,
+            stroke: 0x6d645c,
+            good: 0x8fbf9a,
+            good_wash: 0x1e3328,
+            wash: 0x3a2f22,
+            wash_ink: 0xf0d3b0,
+            button_text: 0x171512,
+        }
+    }
+}
+
+fn palette(window: &Window) -> Palette {
+    match window.appearance() {
+        WindowAppearance::Dark | WindowAppearance::VibrantDark => Palette::dark(),
+        WindowAppearance::Light | WindowAppearance::VibrantLight => Palette::light(),
+    }
+}
 
 struct HopKeepAlive(#[allow(dead_code)] Entity<Hop>);
 
@@ -74,6 +120,7 @@ struct Hop {
     flight: Option<JoinHandle<handoff::Outcome>>,
     status_label: String,
     ticks: u32,
+    theme: Option<Subscription>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +152,7 @@ impl Hop {
             flight: None,
             status_label: String::new(),
             ticks: 0,
+            theme: None,
         }
     }
 
@@ -613,9 +661,18 @@ fn open_window(cx: &mut App, hop: &Entity<Hop>) {
     let opened = cx.open_window(options, move |window, cx| {
         let weak = owner.downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            weak.update(cx, |hop, _| hop.window = None).ok();
+            weak.update(cx, |hop, _| {
+                hop.window = None;
+                hop.theme = None;
+            })
+            .ok();
             true
         });
+        let watch = owner.clone();
+        let theme = window.observe_window_appearance(move |_, cx| {
+            watch.update(cx, |_, cx| cx.notify());
+        });
+        owner.update(cx, |hop, _| hop.theme = Some(theme));
         window.focus(&focus, cx);
         owner
     });
@@ -644,7 +701,8 @@ fn window_options(cx: &App) -> WindowOptions {
 }
 
 impl Render for Hop {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = palette(window);
         let moving: HashSet<String> = self.moving().iter().cloned().collect();
         let any_moving = !moving.is_empty();
         let shared = self.shared_views();
@@ -662,11 +720,14 @@ impl Render for Hop {
             .gap(px(8.0))
             .overflow_y_scroll();
         if let Some(error) = list_error {
-            list = list.child(note(error));
+            list = list.child(note(error, colors));
         } else {
-            list = list.child(section_label("Shared"));
+            list = list.child(section_label("Shared", colors));
             if shared.is_empty() {
-                list = list.child(note("Nothing shared yet. Share a device from this Mac."));
+                list = list.child(note(
+                    "Nothing shared yet. Share a device from this Mac.",
+                    colors,
+                ));
             } else {
                 for device in &shared {
                     let action = if moving.contains(&device.address) {
@@ -678,18 +739,18 @@ impl Render for Hop {
                     } else {
                         RowAction::Connect
                     };
-                    list = list.child(device_row(device, action, cx));
+                    list = list.child(device_row(device, action, colors, cx));
                 }
             }
             if !mine.is_empty() {
-                list = list.child(section_label("On this Mac"));
+                list = list.child(section_label("On this Mac", colors));
                 for device in &mine {
                     let action = if any_moving {
                         RowAction::Wait
                     } else {
                         RowAction::Share
                     };
-                    list = list.child(device_row(device, action, cx));
+                    list = list.child(device_row(device, action, colors, cx));
                 }
             }
         }
@@ -698,8 +759,8 @@ impl Render for Hop {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(PAPER))
-            .text_color(rgb(INK))
+            .bg(rgb(colors.paper))
+            .text_color(rgb(colors.text))
             .pt(px(52.0))
             .px(px(20.0))
             .pb(px(16.0))
@@ -707,12 +768,12 @@ impl Render for Hop {
         if seen == link::Seen::Nearby && !allows.is_empty() {
             for allow in &allows {
                 let id = allow.id.clone();
-                column = column.child(allow_card(&allow.id, &allow.name, {
+                column = column.child(allow_card(&allow.id, &allow.name, colors, {
                     cx.listener(move |this, _: &ClickEvent, _, cx| this.allow_one(&id, cx))
                 }));
             }
         } else {
-            column = column.child(peer_status(seen));
+            column = column.child(peer_status(seen, colors));
         }
         column = column.child(list);
         if let Some(notice) = notice {
@@ -721,9 +782,9 @@ impl Render for Hop {
                     .px(px(12.0))
                     .py(px(8.0))
                     .rounded(px(8.0))
-                    .bg(rgb(WASH))
+                    .bg(rgb(colors.wash))
                     .text_size(px(13.0))
-                    .text_color(rgb(WASH_INK))
+                    .text_color(rgb(colors.wash_ink))
                     .child(notice),
             );
         }
@@ -731,7 +792,12 @@ impl Render for Hop {
     }
 }
 
-fn device_row(device: &DeviceView, action: RowAction, cx: &mut Context<Hop>) -> impl IntoElement {
+fn device_row(
+    device: &DeviceView,
+    action: RowAction,
+    colors: Palette,
+    cx: &mut Context<Hop>,
+) -> impl IntoElement {
     let on_click = {
         let address = device.address.clone();
         cx.listener(move |this, _: &ClickEvent, _, cx| this.on_device(&address, cx))
@@ -750,8 +816,8 @@ fn device_row(device: &DeviceView, action: RowAction, cx: &mut Context<Hop>) -> 
         .px(px(12.0))
         .py(px(10.0))
         .rounded(px(10.0))
-        .bg(rgb(CARD))
-        .child(presence_mark(here, CARD))
+        .bg(rgb(colors.card))
+        .child(presence_mark(here, colors.card, colors))
         .child(
             div()
                 .flex()
@@ -762,30 +828,33 @@ fn device_row(device: &DeviceView, action: RowAction, cx: &mut Context<Hop>) -> 
                 .child(
                     div()
                         .text_size(px(15.0))
-                        .text_color(rgb(INK))
+                        .text_color(rgb(colors.text))
                         .child(device.name.clone()),
                 )
                 .child(
                     div()
                         .text_size(px(13.0))
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(colors.muted))
                         .child(device.detail.clone()),
                 ),
         );
     row = match action {
-        RowAction::Connecting => row.child(status_chip("Connecting…", false)),
-        RowAction::Connected => row
-            .child(status_chip("Connected", true))
-            .child(outline_button(
-                format!("remove-{}", device.address),
-                "Remove",
-                on_remove,
-            )),
+        RowAction::Connecting => row.child(status_chip("Connecting…", false, colors)),
+        RowAction::Connected => {
+            row.child(status_chip("Connected", true, colors))
+                .child(outline_button(
+                    format!("remove-{}", device.address),
+                    "Remove",
+                    colors,
+                    on_remove,
+                ))
+        }
         RowAction::Connect => row.child(action_button(
             format!("act-{}", device.address),
             "Connect",
             true,
             true,
+            colors,
             on_click,
         )),
         RowAction::Share => row.child(action_button(
@@ -793,6 +862,7 @@ fn device_row(device: &DeviceView, action: RowAction, cx: &mut Context<Hop>) -> 
             "Share",
             false,
             true,
+            colors,
             on_click,
         )),
         RowAction::Wait => row.child(action_button(
@@ -800,6 +870,7 @@ fn device_row(device: &DeviceView, action: RowAction, cx: &mut Context<Hop>) -> 
             if device.chosen { "Connect" } else { "Share" },
             device.chosen,
             false,
+            colors,
             on_click,
         )),
     };
@@ -814,7 +885,7 @@ fn place_line(kind: &str, place: &str) -> String {
     }
 }
 
-fn peer_status(seen: link::Seen) -> impl IntoElement {
+fn peer_status(seen: link::Seen, colors: Palette) -> impl IntoElement {
     let (filled, title, detail) = match seen {
         link::Seen::Ready => (true, link::other_mac(), "Ready"),
         link::Seen::Crowd => (
@@ -838,7 +909,7 @@ fn peer_status(seen: link::Seen) -> impl IntoElement {
         .flex_row()
         .items_center()
         .gap(px(10.0))
-        .child(presence_mark(filled, PAPER))
+        .child(presence_mark(filled, colors.paper, colors))
         .child(
             div()
                 .flex()
@@ -848,7 +919,7 @@ fn peer_status(seen: link::Seen) -> impl IntoElement {
                 .child(
                     div()
                         .text_size(px(13.0))
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(colors.muted))
                         .child(detail.to_string()),
                 ),
         )
@@ -857,6 +928,7 @@ fn peer_status(seen: link::Seen) -> impl IntoElement {
 fn allow_card(
     id: &str,
     name: &str,
+    colors: Palette,
     on_allow: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     div()
@@ -867,8 +939,8 @@ fn allow_card(
         .px(px(12.0))
         .py(px(10.0))
         .rounded(px(10.0))
-        .bg(rgb(CARD))
-        .child(presence_mark(false, CARD))
+        .bg(rgb(colors.card))
+        .child(presence_mark(false, colors.card, colors))
         .child(
             div()
                 .flex()
@@ -879,7 +951,7 @@ fn allow_card(
                 .child(
                     div()
                         .text_size(px(13.0))
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(colors.muted))
                         .child("Allow it here, then on that Mac"),
                 ),
         )
@@ -888,31 +960,32 @@ fn allow_card(
             "Allow",
             true,
             true,
+            colors,
             on_allow,
         ))
 }
 
-fn section_label(text: &str) -> impl IntoElement {
+fn section_label(text: &str, colors: Palette) -> impl IntoElement {
     div()
         .pt(px(4.0))
         .text_size(px(12.0))
         .font_weight(FontWeight::BOLD)
-        .text_color(rgb(MUTED))
+        .text_color(rgb(colors.muted))
         .child(text.to_string())
 }
 
-fn note(text: impl Into<String>) -> impl IntoElement {
+fn note(text: impl Into<String>, colors: Palette) -> impl IntoElement {
     div()
         .text_size(px(14.0))
-        .text_color(rgb(MUTED))
+        .text_color(rgb(colors.muted))
         .child(text.into())
 }
 
-fn presence_mark(filled: bool, hole: u32) -> impl IntoElement {
+fn presence_mark(filled: bool, hole: u32, colors: Palette) -> impl IntoElement {
     let (outer, inner, size) = if filled {
-        (GOOD, GOOD, 10.0)
+        (colors.good, colors.good, 10.0)
     } else {
-        (LINE, hole, 6.0)
+        (colors.line, hole, 6.0)
     };
     div()
         .w(px(10.0))
@@ -932,7 +1005,7 @@ fn presence_mark(filled: bool, hole: u32) -> impl IntoElement {
         )
 }
 
-fn status_chip(text: &str, here: bool) -> impl IntoElement {
+fn status_chip(text: &str, here: bool, colors: Palette) -> impl IntoElement {
     div()
         .h(px(22.0))
         .px(px(8.0))
@@ -940,9 +1013,9 @@ fn status_chip(text: &str, here: bool) -> impl IntoElement {
         .flex_shrink_0()
         .items_center()
         .rounded(px(11.0))
-        .bg(rgb(if here { GOOD_WASH } else { LINE }))
+        .bg(rgb(if here { colors.good_wash } else { colors.line }))
         .text_size(px(12.0))
-        .text_color(rgb(if here { GOOD } else { MUTED }))
+        .text_color(rgb(if here { colors.good } else { colors.muted }))
         .child(text.to_string())
 }
 
@@ -951,12 +1024,13 @@ fn action_button(
     label: &str,
     filled: bool,
     enabled: bool,
+    colors: Palette,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     let (bg, ink) = match (filled, enabled) {
-        (true, true) => (INK, PAPER),
-        (false, true) => (LINE, INK),
-        _ => (LINE, MUTED),
+        (true, true) => (colors.text, colors.button_text),
+        (false, true) => (colors.line, colors.text),
+        _ => (colors.line, colors.muted),
     };
     let button = div()
         .id(id)
@@ -981,6 +1055,7 @@ fn action_button(
 fn outline_button(
     id: String,
     label: &str,
+    colors: Palette,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     div()
@@ -988,7 +1063,7 @@ fn outline_button(
         .p(px(1.0))
         .flex_shrink_0()
         .rounded(px(8.0))
-        .bg(rgb(MUTED_ON_INK))
+        .bg(rgb(colors.stroke))
         .cursor_pointer()
         .on_click(on_click)
         .child(
@@ -999,10 +1074,10 @@ fn outline_button(
                 .items_center()
                 .justify_center()
                 .rounded(px(7.0))
-                .bg(rgb(CARD))
+                .bg(rgb(colors.card))
                 .text_size(px(13.0))
                 .font_weight(FontWeight::BOLD)
-                .text_color(rgb(INK))
+                .text_color(rgb(colors.text))
                 .child(label.to_string()),
         )
 }

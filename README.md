@@ -4,7 +4,7 @@ Hop shares the Bluetooth devices you check, then either Mac can take them. That 
 
 The two Macs already know each other. They use the same Apple Account, they are on the same network, and the devices are already paired in Bluetooth on both. Hop does not introduce the Macs.
 
-Hop runs in the menu bar. On a Mac the window stays closed until you choose **Devices…**. The status item shows how many devices are shared. While the other Mac is not running Hop, it reads `no Mac`. While a device is connecting, it reads `…`.
+Hop runs in the menu bar. On a Mac the window stays closed until you choose **Devices…**. The window follows the Mac’s appearance, light or dark. The status item shows how many devices are shared. While the other Mac is not running Hop, it reads `no Mac`. While a device is connecting, it reads `…`.
 
 ## How a move works
 
