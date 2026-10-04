@@ -10,7 +10,7 @@ Hop runs in the menu bar. On a Mac the window stays closed until you choose **De
 
 A Bluetooth device such as a Magic Mouse or a pair of headphones connects to one Mac at a time, and it can remember more than one. Pair each device in System Settings → Bluetooth on both Macs once. After that, Hop does not ask you to pair again.
 
-Both Macs run Hop. Each one announces itself on the local network. The first time the other Mac appears, the menu bar reads **Allow** and the window opens. Choose **Allow** on this Mac, then on that Mac. After that, Hop remembers the other Mac.
+Both Macs run Hop. Each one announces itself on the local network. The first time the other Mac appears, the menu bar reads **Allow** and the window opens. Both Macs show the same code. Choose **Codes match** only when that code is the same on the other Mac. After that, Hop remembers the other Mac.
 
 On the Mac that has a device, open **Devices…** and choose **Share**. Both Macs then show the same list. A filled mark, and a checkmark in the menu, means this Mac is using it. The Mac’s name sits under the device. **Connected** is a green status, and the outlined **Remove** beside it takes the device off the shared list and leaves it connected here. **Connect** is the filled button when the other Mac is using it. The top of the window names the other Mac when it is ready. The first time that Mac appears, **Allow** is in the window as well as the menu.
 

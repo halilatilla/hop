@@ -24,6 +24,7 @@ pub struct MenuDevice {
 pub struct MenuAllow {
     pub id: String,
     pub name: String,
+    pub code: String,
 }
 
 const OPEN: isize = 1;
@@ -360,7 +361,7 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>, peer_line: 
             add_item(
                 menu,
                 target,
-                &format!("Allow {}", allow.name),
+                &format!("{}  {}", allow.code, allow.name),
                 "",
                 ALLOW_TAG + index as isize,
             );

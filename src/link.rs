@@ -20,6 +20,7 @@ use crate::wire::{self, Body, Identity, Reply};
 pub struct Nearby {
     pub id: String,
     pub name: String,
+    pub code: String,
 }
 
 #[derive(Clone, Debug)]
@@ -215,6 +216,7 @@ pub fn pending() -> Vec<Nearby> {
             Some(Nearby {
                 id: wire::hex(&key),
                 name,
+                code: wire::pair_code(&self_key, &key),
             })
         })
         .collect()

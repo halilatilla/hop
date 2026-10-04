@@ -414,7 +414,7 @@ impl Hop {
                     .first()
                     .map(|allow| allow.name.as_str())
                     .unwrap_or("the other Mac");
-                format!("Allow {name} on this Mac. Then allow this Mac on {name}.")
+                format!("Match the code on {name}. Then allow this Mac there.")
             }
             link::Seen::None => handoff::tooltip(handoff::Peer::Missing),
         }
@@ -473,6 +473,7 @@ impl Hop {
             .map(|allow| menu_bar::MenuAllow {
                 id: allow.id.clone(),
                 name: allow.name.clone(),
+                code: allow.code.clone(),
             })
             .collect();
         menu_bar::set_devices(rows, allows, &self.menu_peer_line());
@@ -786,7 +787,7 @@ impl Render for Hop {
         if seen == link::Seen::Nearby && !allows.is_empty() {
             for allow in &allows {
                 let id = allow.id.clone();
-                column = column.child(allow_card(&allow.id, &allow.name, colors, {
+                column = column.child(allow_card(&allow.id, &allow.name, &allow.code, colors, {
                     cx.listener(move |this, _: &ClickEvent, _, cx| this.allow_one(&id, cx))
                 }));
             }
@@ -951,6 +952,7 @@ fn peer_status(seen: link::Seen, first: bool, colors: Palette) -> impl IntoEleme
 fn allow_card(
     id: &str,
     name: &str,
+    code: &str,
     colors: Palette,
     on_allow: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
@@ -965,15 +967,21 @@ fn allow_card(
         .child(div().text_size(px(17.0)).child(name.to_string()))
         .child(
             div()
+                .text_size(px(28.0))
+                .font_weight(FontWeight::BOLD)
+                .child(code.to_string()),
+        )
+        .child(
+            div()
                 .text_size(px(13.0))
                 .text_color(rgb(colors.muted))
                 .child(format!(
-                    "Allow {name} on this Mac. Then, on {name}, allow this Mac."
+                    "This code must match on {name}. Then allow this Mac there."
                 )),
         )
         .child(div().flex().flex_row().justify_end().child(action_button(
             format!("allow-{id}"),
-            "Allow",
+            "Codes match",
             true,
             true,
             colors,

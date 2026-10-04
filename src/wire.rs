@@ -180,6 +180,22 @@ pub fn read_frame(stream: &mut impl Read) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+pub fn pair_code(left: &[u8; 32], right: &[u8; 32]) -> String {
+    use sha2::{Digest, Sha256};
+    let (first, second) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(first);
+    hasher.update(second);
+    let digest = hasher.finalize();
+    let number = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000;
+    let text = format!("{number:06}");
+    format!("{} {}", &text[..3], &text[3..])
+}
+
 pub fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -219,8 +235,8 @@ pub fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Body, Identity, Reply, canon, fresh, hex, parse_key, read_frame, reply, seal, unseal,
-        write_frame,
+        Body, Identity, Reply, canon, fresh, hex, pair_code, parse_key, read_frame, reply, seal,
+        unseal, write_frame,
     };
     use std::collections::HashSet;
     use std::net::TcpListener;
@@ -365,6 +381,16 @@ mod tests {
         assert_eq!(canon("AA:BB:CC:DD:EE:FF"), "aa-bb-cc-dd-ee-ff");
         assert_eq!(canon("aa-bb-cc-dd-ee-ff"), "aa-bb-cc-dd-ee-ff");
         assert_eq!(canon("not a device"), "");
+    }
+
+    #[test]
+    fn the_same_two_macs_share_one_code() {
+        let left = [1u8; 32];
+        let right = [2u8; 32];
+        let other = [3u8; 32];
+        assert_eq!(pair_code(&left, &right), pair_code(&right, &left));
+        assert_ne!(pair_code(&left, &right), pair_code(&left, &other));
+        assert_eq!(pair_code(&left, &right).len(), 7);
     }
 
     #[test]
