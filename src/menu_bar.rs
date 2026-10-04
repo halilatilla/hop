@@ -7,6 +7,7 @@ use std::sync::Mutex;
 pub enum MenuCommand {
     Open,
     UseOne(String),
+    Remove(String),
     Allow(String),
     Quit,
 }
@@ -29,6 +30,7 @@ const QUIT: isize = 3;
 const ABOUT: isize = 4;
 const DEVICE_TAG: isize = 100;
 const ALLOW_TAG: isize = 1000;
+const REMOVE_TAG: isize = 2000;
 
 static PENDING: Mutex<Vec<MenuCommand>> = Mutex::new(Vec::new());
 static ALLOWS: Mutex<Vec<MenuAllow>> = Mutex::new(Vec::new());
@@ -156,7 +158,17 @@ fn install_mac() {
                 }
                 MenuCommand::UseOne(device.address.clone())
             }
-            tag if tag >= ALLOW_TAG => {
+            tag if (REMOVE_TAG..REMOVE_TAG + 800).contains(&tag) => {
+                let index = (tag - REMOVE_TAG) as usize;
+                let Ok(rows) = ROWS.lock() else {
+                    return;
+                };
+                let Some(device) = rows.get(index) else {
+                    return;
+                };
+                MenuCommand::Remove(device.address.clone())
+            }
+            tag if (ALLOW_TAG..REMOVE_TAG).contains(&tag) => {
                 let index = (tag - ALLOW_TAG) as usize;
                 let Ok(allows) = ALLOWS.lock() else {
                     return;
@@ -365,6 +377,13 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
             let item = add_item(menu, target, &title, "", DEVICE_TAG + index as isize);
             if device.connected {
                 let _: () = msg_send![item, setEnabled: false];
+                add_item(
+                    menu,
+                    target,
+                    &format!("Remove  {}", device.name),
+                    "",
+                    REMOVE_TAG + index as isize,
+                );
             }
         }
         add_separator(menu);

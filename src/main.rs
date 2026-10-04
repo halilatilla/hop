@@ -152,6 +152,7 @@ impl Hop {
                     cx.defer(move |cx| open_window(cx, &hop));
                 }
                 MenuCommand::UseOne(address) => self.use_one(&address),
+                MenuCommand::Remove(address) => self.unshare(&address, cx),
                 MenuCommand::Allow(id) => {
                     link::allow(&id);
                     self.note_peer();
@@ -478,6 +479,17 @@ impl Hop {
         }
     }
 
+    fn unshare(&mut self, address: &str, cx: &mut Context<Self>) {
+        let address = wire::canon(address);
+        let here = self
+            .devices
+            .iter()
+            .any(|device| device.address == address && device.connected);
+        if here && self.choice.addresses.contains(&address) {
+            self.toggle(&address, cx);
+        }
+    }
+
     fn toggle(&mut self, address: &str, cx: &mut Context<Self>) {
         let address = wire::canon(address);
         if address.is_empty() {
@@ -611,20 +623,44 @@ impl Render for Hop {
                     } else {
                         "Connect"
                     };
-                    list = list.child(device_row(device, label, {
-                        let address = address.clone();
-                        cx.listener(move |this, _: &ClickEvent, _, cx| this.on_device(&address, cx))
-                    }));
+                    list = list.child(device_row(
+                        device,
+                        label,
+                        {
+                            let address = address.clone();
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.on_device(&address, cx)
+                            })
+                        },
+                        {
+                            let address = address.clone();
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.unshare(&address, cx)
+                            })
+                        },
+                    ));
                 }
             }
             if !mine.is_empty() {
                 list = list.child(section_label("On this Mac"));
                 for device in &mine {
                     let address = device.address.clone();
-                    list = list.child(device_row(device, "Share", {
-                        let address = address.clone();
-                        cx.listener(move |this, _: &ClickEvent, _, cx| this.on_device(&address, cx))
-                    }));
+                    list = list.child(device_row(
+                        device,
+                        "Share",
+                        {
+                            let address = address.clone();
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.on_device(&address, cx)
+                            })
+                        },
+                        {
+                            let address = address.clone();
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.unshare(&address, cx)
+                            })
+                        },
+                    ));
                 }
             }
         }
@@ -643,7 +679,7 @@ impl Render for Hop {
             .child(
                 div()
                     .text_size(px(15.0))
-                    .child("Both Macs show this list. Connected is the Mac using it."),
+                    .child("Connected is this Mac. Remove takes that device off the shared list."),
             )
             .child(
                 div()
@@ -704,6 +740,7 @@ fn device_row(
     device: &DeviceView,
     action: &str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    on_remove: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     let live = action != "Connected";
     let (button_bg, button_ink) = if action == "Connect" {
@@ -713,12 +750,12 @@ fn device_row(
     } else {
         (rgb(0xe7e0d6), rgb(MUTED))
     };
-    div()
+    let mut row = div()
         .id(format!("device-{}", device.address))
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(12.0))
+        .gap(px(8.0))
         .px(px(12.0))
         .py(px(10.0))
         .rounded(px(10.0))
@@ -761,5 +798,25 @@ fn device_row(
             } else {
                 button
             }
-        })
+        });
+    if action == "Connected" {
+        row = row.child(
+            div()
+                .id(format!("remove-{}", device.address))
+                .h(px(32.0))
+                .px(px(12.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(8.0))
+                .bg(rgb(0xe7e0d6))
+                .text_color(rgb(INK))
+                .text_size(px(13.0))
+                .font_weight(FontWeight::BOLD)
+                .cursor_pointer()
+                .child("Remove")
+                .on_click(on_remove),
+        );
+    }
+    row
 }
