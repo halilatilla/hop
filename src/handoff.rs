@@ -7,19 +7,21 @@ pub enum Peer {
     Ready,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preflight {
     Unreachable,
     Accepted,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerReply {
-    #[allow(dead_code)]
     TookThem,
     Failed,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BluetoothOp {
     Disconnect(Vec<String>),
@@ -30,23 +32,85 @@ pub enum BluetoothOp {
 pub enum StayReason {
     NothingHere,
     PeerUnreachable,
+    NeedsAllow,
+    Crowd,
+    Refused,
+    StillHere,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Stayed(StayReason),
+    #[allow(dead_code)]
     Moved(Vec<String>),
     Reconnected(Vec<String>),
 }
 
-pub fn observe_peer() -> Peer {
-    Peer::Missing
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AskResult {
+    Disconnect,
+    Stay(StayReason),
 }
 
-pub fn preflight_now() -> Preflight {
-    Preflight::Unreachable
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReleaseResult {
+    Moved,
+    Reconnect,
 }
 
+pub fn after_ask(reply: Option<&str>) -> AskResult {
+    match reply {
+        Some("accept") => AskResult::Disconnect,
+        Some("refuse") => AskResult::Stay(StayReason::Refused),
+        _ => AskResult::Stay(StayReason::PeerUnreachable),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropResult {
+    Release,
+    Stay(StayReason),
+}
+
+pub fn after_drop(gone: bool) -> DropResult {
+    if gone {
+        DropResult::Release
+    } else {
+        DropResult::Stay(StayReason::StillHere)
+    }
+}
+
+pub fn after_release(reply: Option<&str>) -> ReleaseResult {
+    match reply {
+        Some("took") => ReleaseResult::Moved,
+        _ => ReleaseResult::Reconnect,
+    }
+}
+
+pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
+    match reason {
+        StayReason::NothingHere => None,
+        StayReason::PeerUnreachable => {
+            Some("The other Mac is not running Hop. Devices stayed on this Mac.")
+        }
+        StayReason::NeedsAllow => {
+            Some("Allow the other Mac in the menu, on both Macs. Devices stayed on this Mac.")
+        }
+        StayReason::Crowd => {
+            Some("More than one other Mac is running Hop. Devices stayed on this Mac.")
+        }
+        StayReason::Refused => {
+            Some("The other Mac has not allowed this Mac. Devices stayed on this Mac.")
+        }
+        StayReason::StillHere => Some("The devices stayed on this Mac."),
+    }
+}
+
+pub fn reconnected_notice() -> &'static str {
+    "The other Mac did not take the devices. They are connected on this Mac again."
+}
+
+#[allow(dead_code)]
 pub fn run(
     preflight: Preflight,
     connected: &[String],
@@ -74,6 +138,7 @@ pub fn run(
     }
 }
 
+#[allow(dead_code)]
 pub fn execute(ops: &[BluetoothOp]) -> bool {
     ops.is_empty()
 }
@@ -99,8 +164,8 @@ pub fn tooltip(peer: Peer) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BluetoothOp, Outcome, Peer, PeerReply, Preflight, StayReason, execute, run, status_label,
-        tooltip,
+        AskResult, BluetoothOp, DropResult, Outcome, Peer, PeerReply, Preflight, ReleaseResult,
+        StayReason, after_ask, after_drop, after_release, execute, run, status_label, tooltip,
     };
 
     fn mouse() -> Vec<String> {
@@ -149,6 +214,33 @@ mod tests {
             BluetoothOp::Disconnect(mouse()),
             BluetoothOp::Connect(mouse())
         ]));
+    }
+
+    #[test]
+    #[test]
+    fn a_stranger_reply_does_not_disconnect() {
+        assert_eq!(
+            after_ask(None),
+            AskResult::Stay(StayReason::PeerUnreachable)
+        );
+        assert_eq!(
+            after_ask(Some("refuse")),
+            AskResult::Stay(StayReason::Refused)
+        );
+        assert_eq!(after_ask(Some("accept")), AskResult::Disconnect);
+    }
+
+    #[test]
+    fn devices_that_are_still_connected_are_not_released() {
+        assert_eq!(after_drop(false), DropResult::Stay(StayReason::StillHere));
+        assert_eq!(after_drop(true), DropResult::Release);
+    }
+
+    #[test]
+    fn a_failed_release_reconnects() {
+        assert_eq!(after_release(Some("took")), ReleaseResult::Moved);
+        assert_eq!(after_release(Some("failed")), ReleaseResult::Reconnect);
+        assert_eq!(after_release(None), ReleaseResult::Reconnect);
     }
 
     #[test]

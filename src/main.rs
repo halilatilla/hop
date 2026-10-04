@@ -1,10 +1,13 @@
 mod bluetooth;
 mod choice;
 mod handoff;
+mod link;
 mod menu_bar;
+mod wire;
 
 use std::collections::HashSet;
-use std::time::Duration;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, ClickEvent, Context, Entity, FocusHandle, FontWeight, Global, IntoElement, Render,
@@ -38,6 +41,24 @@ fn main() {
     });
 }
 
+enum Phase {
+    Idle,
+    Asking {
+        target: link::Target,
+        addresses: Vec<String>,
+        started: Instant,
+    },
+    Dropping {
+        target: link::Target,
+        addresses: Vec<String>,
+        started: Instant,
+    },
+    Releasing {
+        addresses: Vec<String>,
+        started: Instant,
+    },
+}
+
 struct Hop {
     window: Option<gpui::WindowHandle<Hop>>,
     focus: FocusHandle,
@@ -45,6 +66,11 @@ struct Hop {
     list_error: Option<String>,
     chosen: HashSet<String>,
     peer: handoff::Peer,
+    seen: link::Seen,
+    allows: Vec<link::Nearby>,
+    notice: Option<String>,
+    phase: Phase,
+    flight: Option<JoinHandle<Result<wire::Body, String>>>,
     status_label: String,
     ticks: u32,
 }
@@ -69,14 +95,21 @@ impl Hop {
                 eprintln!("hop: using no chosen devices ({err})");
                 HashSet::new()
             }),
-            peer: handoff::observe_peer(),
+            peer: handoff::Peer::Missing,
+            seen: link::Seen::None,
+            allows: Vec::new(),
+            notice: None,
+            phase: Phase::Idle,
+            flight: None,
             status_label: String::new(),
             ticks: 0,
         }
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
+        link::start();
         self.refresh(cx);
+        self.note_peer();
         self.publish_status();
         self.sync_menu();
         cx.spawn(async move |this, cx| {
@@ -94,10 +127,25 @@ impl Hop {
 
     fn on_tick(&mut self, cx: &mut Context<Self>) {
         self.ticks = self.ticks.wrapping_add(1);
-        let peer = handoff::observe_peer();
-        if peer != self.peer {
-            self.peer = peer;
+        link::set_paired(
+            self.devices
+                .iter()
+                .map(|device| device.address.clone())
+                .collect(),
+        );
+        link::drive_bluetooth();
+        self.drive_send();
+        let seen = link::seen();
+        let allows = link::pending();
+        if seen != self.seen || allows != self.allows {
+            if matches!(self.phase, Phase::Idle) {
+                self.notice = None;
+            }
+            self.seen = seen;
+            self.allows = allows;
+            self.peer = link::peer();
             self.publish_status();
+            self.sync_menu();
             cx.notify();
         }
         if self.ticks.is_multiple_of(8) {
@@ -112,6 +160,13 @@ impl Hop {
                 }
                 MenuCommand::SendAll => self.send_all(),
                 MenuCommand::SendOne(address) => self.send_one(&address),
+                MenuCommand::Allow(id) => {
+                    link::allow(&id);
+                    self.note_peer();
+                    self.publish_status();
+                    self.sync_menu();
+                    cx.notify();
+                }
                 MenuCommand::Quit => cx.quit(),
             }
         }
@@ -147,27 +202,161 @@ impl Hop {
     }
 
     fn send_addresses(&mut self, targets: &[String]) {
-        let (mut outcome, ops) = handoff::run(
-            handoff::preflight_now(),
-            targets,
-            handoff::PeerReply::Failed,
-        );
-        if !handoff::execute(&ops) {
-            outcome = handoff::Outcome::Stayed(handoff::StayReason::PeerUnreachable);
+        if !matches!(self.phase, Phase::Idle) {
+            return;
         }
-        self.report(outcome);
+        self.notice = None;
+        if targets.is_empty() {
+            self.report(handoff::Outcome::Stayed(handoff::StayReason::NothingHere));
+            return;
+        }
+        let Some(target) = link::target() else {
+            let reason = match self.seen {
+                link::Seen::Nearby => handoff::StayReason::NeedsAllow,
+                link::Seen::Crowd => handoff::StayReason::Crowd,
+                _ => handoff::StayReason::PeerUnreachable,
+            };
+            self.report(handoff::Outcome::Stayed(reason));
+            return;
+        };
+        let addresses = targets.to_vec();
+        self.spawn_exchange(target.clone(), "take", addresses.clone());
+        self.phase = Phase::Asking {
+            target,
+            addresses,
+            started: Instant::now(),
+        };
+    }
+
+    fn drive_send(&mut self) {
+        let (started, dropping) = match &self.phase {
+            Phase::Idle => return,
+            Phase::Asking { started, .. } => (*started, false),
+            Phase::Dropping { started, .. } => (*started, true),
+            Phase::Releasing { started, .. } => (*started, false),
+        };
+        let limit = if dropping {
+            Duration::from_secs(4)
+        } else {
+            Duration::from_secs(8)
+        };
+        if started.elapsed() > limit {
+            self.flight = None;
+            let phase = std::mem::replace(&mut self.phase, Phase::Idle);
+            match phase {
+                Phase::Asking { .. } => {
+                    self.report(handoff::Outcome::Stayed(
+                        handoff::StayReason::PeerUnreachable,
+                    ));
+                }
+                Phase::Dropping { addresses, .. } => {
+                    self.bring_back(&addresses);
+                    self.report(handoff::Outcome::Stayed(handoff::StayReason::StillHere));
+                }
+                Phase::Releasing { addresses, .. } => {
+                    self.bring_back(&addresses);
+                    self.report(handoff::Outcome::Reconnected(addresses));
+                }
+                Phase::Idle => {}
+            }
+            return;
+        }
+        if dropping {
+            let Phase::Dropping {
+                target, addresses, ..
+            } = std::mem::replace(&mut self.phase, Phase::Idle)
+            else {
+                return;
+            };
+            let gone = addresses
+                .iter()
+                .all(|address| !bluetooth::connected(address));
+            match handoff::after_drop(gone) {
+                handoff::DropResult::Release => {
+                    self.spawn_exchange(target, "released", addresses.clone());
+                    self.phase = Phase::Releasing {
+                        addresses,
+                        started: Instant::now(),
+                    };
+                }
+                handoff::DropResult::Stay(_) => {
+                    self.phase = Phase::Dropping {
+                        target,
+                        addresses,
+                        started,
+                    };
+                }
+            }
+            return;
+        }
+        let Some(result) = take_flight(&mut self.flight) else {
+            return;
+        };
+        let phase = std::mem::replace(&mut self.phase, Phase::Idle);
+        let reply = result.ok().map(|body| body.op);
+        match phase {
+            Phase::Asking {
+                target, addresses, ..
+            } => match handoff::after_ask(reply.as_deref()) {
+                handoff::AskResult::Disconnect => {
+                    for address in &addresses {
+                        let _ = bluetooth::disconnect(address);
+                    }
+                    self.phase = Phase::Dropping {
+                        target,
+                        addresses,
+                        started: Instant::now(),
+                    };
+                }
+                handoff::AskResult::Stay(reason) => {
+                    self.report(handoff::Outcome::Stayed(reason));
+                }
+            },
+            Phase::Releasing { addresses, .. } => match handoff::after_release(reply.as_deref()) {
+                handoff::ReleaseResult::Moved => {
+                    self.notice = None;
+                    self.publish_status();
+                }
+                handoff::ReleaseResult::Reconnect => {
+                    self.bring_back(&addresses);
+                    self.report(handoff::Outcome::Reconnected(addresses));
+                }
+            },
+            other => self.phase = other,
+        }
+    }
+
+    fn spawn_exchange(&mut self, target: link::Target, op: &'static str, addresses: Vec<String>) {
+        self.flight = Some(std::thread::spawn(move || {
+            link::exchange(&target, op, &addresses)
+        }));
+    }
+
+    fn bring_back(&self, addresses: &[String]) {
+        for address in addresses {
+            let _ = bluetooth::connect(address);
+        }
+    }
+
+    fn note_peer(&mut self) {
+        self.seen = link::seen();
+        self.allows = link::pending();
+        self.peer = link::peer();
     }
 
     fn report(&mut self, outcome: handoff::Outcome) {
-        if !matches!(
-            outcome,
-            handoff::Outcome::Stayed(handoff::StayReason::PeerUnreachable)
-        ) {
+        let notice = match &outcome {
+            handoff::Outcome::Stayed(reason) => handoff::stayed_notice(*reason).map(str::to_string),
+            handoff::Outcome::Reconnected(_) => Some(handoff::reconnected_notice().to_string()),
+            handoff::Outcome::Moved(_) => None,
+        };
+        let Some(notice) = notice else {
             return;
-        }
-        menu_bar::set_tooltip(&handoff::tooltip(self.peer));
+        };
+        self.notice = Some(notice.clone());
+        menu_bar::set_tooltip(&notice);
         if self.window.is_none() {
-            menu_bar::notify_stayed();
+            menu_bar::notify_stayed(&notice);
         }
     }
 
@@ -185,12 +374,31 @@ impl Hop {
 
     fn publish_status(&mut self) {
         let label = handoff::status_label(self.chosen_count(), self.peer);
+        menu_bar::set_tooltip(&self.status_tooltip());
         if self.status_label == label {
             return;
         }
         self.status_label = label.clone();
         menu_bar::set_title(&label);
-        menu_bar::set_tooltip(&handoff::tooltip(self.peer));
+    }
+
+    fn status_tooltip(&self) -> String {
+        if let Some(notice) = &self.notice {
+            return notice.clone();
+        }
+        match self.seen {
+            link::Seen::Ready => handoff::tooltip(handoff::Peer::Ready),
+            link::Seen::Crowd => "More than one other Mac is running Hop.".to_string(),
+            link::Seen::Nearby => {
+                let name = self
+                    .allows
+                    .first()
+                    .map(|allow| allow.name.as_str())
+                    .unwrap_or("the other Mac");
+                format!("Allow {name} in this menu. Then allow this Mac on that Mac.")
+            }
+            link::Seen::None => handoff::tooltip(handoff::Peer::Missing),
+        }
     }
 
     fn sync_menu(&self) {
@@ -204,7 +412,15 @@ impl Hop {
                 connected: device.connected,
             })
             .collect();
-        menu_bar::set_devices(rows);
+        let allows = self
+            .allows
+            .iter()
+            .map(|allow| menu_bar::MenuAllow {
+                id: allow.id.clone(),
+                name: allow.name.clone(),
+            })
+            .collect();
+        menu_bar::set_devices(rows, allows);
     }
 
     fn toggle(&mut self, address: &str, cx: &mut Context<Self>) {
@@ -295,6 +511,10 @@ impl Render for Hop {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chosen_count = self.chosen_count();
         let peer = self.peer;
+        let footer = self
+            .notice
+            .clone()
+            .unwrap_or_else(|| summary(chosen_count, peer, self.seen));
         let mut list = div()
             .id("device-list")
             .flex()
@@ -362,21 +582,40 @@ impl Render for Hop {
                 div()
                     .text_size(px(13.0))
                     .text_color(rgb(MUTED))
-                    .child(summary(chosen_count, peer)),
+                    .child(footer),
             )
     }
 }
 
-fn summary(chosen: usize, peer: handoff::Peer) -> String {
+fn summary(chosen: usize, peer: handoff::Peer, seen: link::Seen) -> String {
+    if seen == link::Seen::Nearby {
+        return "The other Mac is nearby. Allow it in the menu, on both Macs, before Send.".into();
+    }
+    if seen == link::Seen::Crowd {
+        return "More than one other Mac is running Hop.".into();
+    }
     match (chosen, peer) {
         (0, handoff::Peer::Missing) => "Nothing chosen. The other Mac is not running Hop, so Send leaves everything connected here.".into(),
         (_, handoff::Peer::Missing) => format!(
             "{chosen} chosen. A checked row in the menu is on this Mac. The other Mac is not running Hop, so Send leaves them here."
         ),
-        (0, handoff::Peer::Ready) => "Nothing chosen.".into(),
+        (0, handoff::Peer::Ready) => "Nothing chosen. The other Mac can take a device that is connected here.".into(),
         (count, handoff::Peer::Ready) => {
             format!("{count} chosen. Send moves the ones that are connected.")
         }
+    }
+}
+
+fn take_flight(
+    flight: &mut Option<JoinHandle<Result<wire::Body, String>>>,
+) -> Option<Result<wire::Body, String>> {
+    let finished = flight.as_ref()?.is_finished();
+    if !finished {
+        return None;
+    }
+    match flight.take()?.join() {
+        Ok(result) => Some(result),
+        Err(_) => Some(Err("The send was interrupted.".into())),
     }
 }
 

@@ -8,6 +8,7 @@ pub enum MenuCommand {
     Open,
     SendAll,
     SendOne(String),
+    Allow(String),
     Quit,
 }
 
@@ -18,13 +19,21 @@ pub struct MenuDevice {
     pub connected: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuAllow {
+    pub id: String,
+    pub name: String,
+}
+
 const OPEN: isize = 1;
 const SEND_ALL: isize = 2;
 const QUIT: isize = 3;
 const ABOUT: isize = 4;
 const DEVICE_TAG: isize = 100;
+const ALLOW_TAG: isize = 1000;
 
 static PENDING: Mutex<Vec<MenuCommand>> = Mutex::new(Vec::new());
+static ALLOWS: Mutex<Vec<MenuAllow>> = Mutex::new(Vec::new());
 
 pub fn poll() -> Vec<MenuCommand> {
     PENDING
@@ -52,16 +61,21 @@ pub fn set_tooltip(text: &str) {
     let _ = text;
 }
 
-pub fn set_devices(devices: Vec<MenuDevice>) {
+pub fn set_devices(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
     #[cfg(target_os = "macos")]
-    set_devices_mac(devices);
+    set_devices_mac(devices, allows);
     #[cfg(not(target_os = "macos"))]
-    let _ = devices;
+    {
+        let _ = devices;
+        let _ = allows;
+    }
 }
 
-pub fn notify_stayed() {
+pub fn notify_stayed(body: &str) {
     #[cfg(target_os = "macos")]
-    notify_stayed_mac();
+    notify_stayed_mac(body);
+    #[cfg(not(target_os = "macos"))]
+    let _ = body;
 }
 
 #[cfg(target_os = "macos")]
@@ -132,7 +146,7 @@ fn install_mac() {
             OPEN => MenuCommand::Open,
             SEND_ALL => MenuCommand::SendAll,
             QUIT => MenuCommand::Quit,
-            tag if tag >= DEVICE_TAG => {
+            tag if (DEVICE_TAG..ALLOW_TAG).contains(&tag) => {
                 let index = (tag - DEVICE_TAG) as usize;
                 let Ok(rows) = ROWS.lock() else {
                     return;
@@ -141,6 +155,16 @@ fn install_mac() {
                     return;
                 };
                 MenuCommand::SendOne(device.address.clone())
+            }
+            tag if tag >= ALLOW_TAG => {
+                let index = (tag - ALLOW_TAG) as usize;
+                let Ok(allows) = ALLOWS.lock() else {
+                    return;
+                };
+                let Some(allow) = allows.get(index) else {
+                    return;
+                };
+                MenuCommand::Allow(allow.id.clone())
             }
             _ => return,
         };
@@ -294,12 +318,15 @@ fn add_item(
 }
 
 #[cfg(target_os = "macos")]
-fn set_devices_mac(devices: Vec<MenuDevice>) {
+fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
     use objc::runtime::Object;
     use objc::{msg_send, sel, sel_impl};
 
     if let Ok(mut rows) = ROWS.lock() {
         *rows = devices.clone();
+    }
+    if let Ok(mut saved) = ALLOWS.lock() {
+        *saved = allows.clone();
     }
     let Ok(slot) = STATUS.lock() else {
         return;
@@ -314,6 +341,18 @@ fn set_devices_mac(devices: Vec<MenuDevice>) {
         let _: () = msg_send![menu, removeAllItems];
         add_item(menu, target, "About Hop", "", ABOUT);
         add_separator(menu);
+        for (index, allow) in allows.iter().enumerate() {
+            add_item(
+                menu,
+                target,
+                &format!("Allow {}", allow.name),
+                "",
+                ALLOW_TAG + index as isize,
+            );
+        }
+        if !allows.is_empty() {
+            add_separator(menu);
+        }
         add_item(menu, target, "Devices…", ",", OPEN);
         add_separator(menu);
         for (index, device) in devices.iter().enumerate() {
@@ -333,7 +372,7 @@ fn set_devices_mac(devices: Vec<MenuDevice>) {
 }
 
 #[cfg(target_os = "macos")]
-fn notify_stayed_mac() {
+fn notify_stayed_mac(body: &str) {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
 
@@ -344,9 +383,7 @@ fn notify_stayed_mac() {
             return;
         }
         let _: () = msg_send![note, setTitle: ns_string("Hop")];
-        let _: () = msg_send![note, setInformativeText: ns_string(
-            "The other Mac is not running Hop. Devices stayed on this Mac."
-        )];
+        let _: () = msg_send![note, setInformativeText: ns_string(body)];
         let _: () = msg_send![note, setIdentifier: ns_string("hop-send-stayed")];
         let center: *mut Object = msg_send![
             class!(NSUserNotificationCenter),

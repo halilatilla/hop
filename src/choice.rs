@@ -13,6 +13,13 @@ struct File {
     addresses: Vec<String>,
 }
 
+pub fn config_dir() -> PathBuf {
+    choice_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 pub fn choice_path() -> PathBuf {
     if let Some(dir) = std::env::var_os("HOP_CONFIG_DIR") {
         if !dir.is_empty() {

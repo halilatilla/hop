@@ -11,6 +11,57 @@ pub struct PairedDevice {
     pub connected: bool,
 }
 
+pub fn connected(address: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc::{msg_send, sel, sel_impl};
+        with_device(address, |device| unsafe {
+            let connected: bool = msg_send![device, isConnected];
+            connected
+        })
+        .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = address;
+        false
+    }
+}
+
+pub fn disconnect(address: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc::{msg_send, sel, sel_impl};
+        with_device(address, |device| unsafe {
+            let result: i32 = msg_send![device, closeConnection];
+            result == 0
+        })
+        .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = address;
+        false
+    }
+}
+
+pub fn connect(address: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc::{msg_send, sel, sel_impl};
+        with_device(address, |device| unsafe {
+            let result: i32 = msg_send![device, openConnection];
+            result == 0
+        })
+        .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = address;
+        false
+    }
+}
+
 pub fn paired_devices() -> Result<Vec<PairedDevice>, String> {
     #[cfg(target_os = "macos")]
     {
@@ -157,6 +208,44 @@ unsafe fn ns_string(value: *mut objc::runtime::Object) -> Option<String> {
             .to_string_lossy()
             .into_owned(),
     )
+}
+
+#[cfg(target_os = "macos")]
+fn with_device<T>(address: &str, f: impl FnOnce(*mut objc::runtime::Object) -> T) -> Option<T> {
+    use objc::runtime::{Class, Object};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    load_framework();
+    let device_class = Class::get("IOBluetoothDevice")?;
+    let want = address.trim().to_ascii_lowercase();
+    if want.is_empty() {
+        return None;
+    }
+    unsafe {
+        let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+        let list: *mut Object = msg_send![device_class, pairedDevices];
+        let mut found = None;
+        if !list.is_null() {
+            let count: usize = msg_send![list, count];
+            for index in 0..count {
+                let device: *mut Object = msg_send![list, objectAtIndex: index];
+                if device.is_null() {
+                    continue;
+                }
+                let Some(have) = ns_string(msg_send![device, addressString]) else {
+                    continue;
+                };
+                if have.trim().eq_ignore_ascii_case(&want) {
+                    found = Some(f(device));
+                    break;
+                }
+            }
+        }
+        if !pool.is_null() {
+            let _: () = msg_send![pool, drain];
+        }
+        found
+    }
 }
 
 #[cfg(target_os = "macos")]
