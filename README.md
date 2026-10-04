@@ -12,7 +12,7 @@ A Bluetooth device such as a Magic Mouse or a pair of headphones connects to one
 
 Both Macs run Hop. Each one announces itself on the local network. The first time the other Mac appears, the menu bar reads **Allow** and the menu shows the code with **Codes match**. Choose **Codes match** only when that code is the same on the other Mac. After that, Hop remembers the other Mac.
 
-On the Mac that has a device, choose **Share** in the menu. Both Macs then show it under **Shared**. A checkmark means this Mac is using it. **Remove**, under that name, takes it off the shared list and leaves it connected here. **Connect** means the other Mac is using it, and choosing it connects the device here. The other Mac’s name sits at the top of the menu when it is on the network.
+On the Mac that has a device, choose **Share** in the menu. Both Macs then show it under **Shared**. A checkmark means this Mac is using it. Open that row and choose **Remove** to take it off the shared list. It stays connected here. **Connect** means the other Mac is using it, and choosing it connects the device here. The other Mac’s name sits at the top of the menu when it is on the network.
 
 That click asks before anything disconnects. The Mac that has the device drops it from Bluetooth, then this Mac connects it. If this Mac does not have it paired yet, it pairs it. If the other Mac does not answer or has not allowed this Mac, nothing is dropped. If the device does leave and this Mac does not connect it, Hop connects it again on the Mac that had it. That failure is one notification, replaced if you try again.
 

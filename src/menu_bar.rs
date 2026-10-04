@@ -355,7 +355,7 @@ fn set_devices_mac(
     peer_line: &str,
 ) {
     use objc::runtime::Object;
-    use objc::{msg_send, sel, sel_impl};
+    use objc::{class, msg_send, sel, sel_impl};
 
     if let Ok(mut rows) = ROWS.lock() {
         *rows = devices.clone();
@@ -431,14 +431,9 @@ fn set_devices_mac(
             } else if device.connected {
                 // NSControlStateValueOn
                 let _: () = msg_send![item, setState: 1isize];
-                let _: () = msg_send![item, setEnabled: false];
-                add_item(
-                    menu,
-                    target,
-                    &format!("Remove {}", device.name),
-                    "",
-                    REMOVE_TAG + index as isize,
-                );
+                let submenu: *mut Object = msg_send![class!(NSMenu), new];
+                add_item(submenu, target, "Remove", "", REMOVE_TAG + index as isize);
+                let _: () = msg_send![item, setSubmenu: submenu];
             }
         }
         add_separator(menu);
