@@ -3,12 +3,25 @@
 use std::ffi::CString;
 use std::sync::Mutex;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
     Open,
-    Send,
+    SendAll,
+    SendOne(String),
     Quit,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuDevice {
+    pub address: String,
+    pub name: String,
+    pub connected: bool,
+}
+
+const OPEN: isize = 1;
+const SEND_ALL: isize = 2;
+const QUIT: isize = 3;
+const DEVICE_TAG: isize = 100;
 
 static PENDING: Mutex<Vec<MenuCommand>> = Mutex::new(Vec::new());
 
@@ -29,6 +42,26 @@ pub fn set_title(title: &str) {
     set_title_mac(title);
     #[cfg(not(target_os = "macos"))]
     let _ = title;
+}
+
+pub fn set_tooltip(text: &str) {
+    #[cfg(target_os = "macos")]
+    set_tooltip_mac(text);
+    #[cfg(not(target_os = "macos"))]
+    let _ = text;
+}
+
+pub fn set_devices(devices: Vec<MenuDevice>) {
+    #[cfg(target_os = "macos")]
+    set_devices_mac(devices);
+    #[cfg(not(target_os = "macos"))]
+    let _ = devices;
+}
+
+/// One notice, replaced if Send fails again. Used when the window is closed.
+pub fn notify_stayed() {
+    #[cfg(target_os = "macos")]
+    notify_stayed_mac();
 }
 
 #[cfg(target_os = "macos")]
@@ -59,6 +92,8 @@ fn install_mac() {
             *slot = StatusSlot {
                 button: button as usize,
                 item: item as usize,
+                menu: menu as usize,
+                target: target as usize,
             };
         }
         steady_menu_font(button);
@@ -89,9 +124,22 @@ fn install_mac() {
     extern "C" fn menu_action(_this: &objc::runtime::Object, _: Sel, sender: *mut Object) {
         let tag: isize = unsafe { msg_send![sender, tag] };
         let command = match tag {
-            1 => MenuCommand::Open,
-            2 => MenuCommand::Send,
-            3 => MenuCommand::Quit,
+            OPEN => MenuCommand::Open,
+            SEND_ALL => MenuCommand::SendAll,
+            QUIT => MenuCommand::Quit,
+            tag if tag >= DEVICE_TAG => {
+                let index = (tag - DEVICE_TAG) as usize;
+                let Ok(rows) = ROWS.lock() else {
+                    return;
+                };
+                let Some(device) = rows.get(index) else {
+                    return;
+                };
+                if !device.connected {
+                    return;
+                }
+                MenuCommand::SendOne(device.address.clone())
+            }
             _ => return,
         };
         if let Ok(mut pending) = PENDING.lock() {
@@ -102,10 +150,10 @@ fn install_mac() {
     fn status_menu(target: *mut Object) -> *mut Object {
         unsafe {
             let menu: *mut Object = msg_send![class!(NSMenu), new];
-            add_item(menu, target, "Devices…", ",", 1);
-            add_item(menu, target, "Send to the other Mac", "", 2);
+            add_item(menu, target, "Devices…", ",", OPEN);
+            add_item(menu, target, "Send to the other Mac", "", SEND_ALL);
             add_separator(menu);
-            add_item(menu, target, "Quit Hop", "q", 3);
+            add_item(menu, target, "Quit Hop", "q", QUIT);
             menu
         }
     }
@@ -117,33 +165,12 @@ fn install_mac() {
             let _: () = msg_send![main, addItem: app_item];
             let submenu: *mut Object = msg_send![class!(NSMenu), new];
             let _: () = msg_send![submenu, setTitle: ns_string("Hop")];
-            add_item(submenu, target, "Devices…", ",", 1);
-            add_item(submenu, target, "Send to the other Mac", "", 2);
+            add_item(submenu, target, "Devices…", ",", OPEN);
+            add_item(submenu, target, "Send to the other Mac", "", SEND_ALL);
             add_separator(submenu);
-            add_item(submenu, target, "Quit Hop", "q", 3);
+            add_item(submenu, target, "Quit Hop", "q", QUIT);
             let _: () = msg_send![app_item, setSubmenu: submenu];
             let _: () = msg_send![app, setMainMenu: main];
-        }
-    }
-
-    fn add_separator(menu: *mut Object) {
-        unsafe {
-            let separator: *mut Object = msg_send![class!(NSMenuItem), separatorItem];
-            let _: () = msg_send![menu, addItem: separator];
-        }
-    }
-
-    fn add_item(menu: *mut Object, target: *mut Object, title: &str, key: &str, tag: isize) {
-        unsafe {
-            let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
-            let item: *mut Object = msg_send![item, initWithTitle: ns_string(title) action: sel!(hopMenu:) keyEquivalent: ns_string(key)];
-            let _: () = msg_send![item, setTarget: target];
-            let _: () = msg_send![item, setTag: tag];
-            if !key.is_empty() {
-                // NSEventModifierFlagCommand
-                let _: () = msg_send![item, setKeyEquivalentModifierMask: 1usize << 20];
-            }
-            let _: () = msg_send![menu, addItem: item];
         }
     }
 }
@@ -152,10 +179,20 @@ fn install_mac() {
 struct StatusSlot {
     button: usize,
     item: usize,
+    menu: usize,
+    target: usize,
 }
 
 #[cfg(target_os = "macos")]
-static STATUS: Mutex<StatusSlot> = Mutex::new(StatusSlot { button: 0, item: 0 });
+static STATUS: Mutex<StatusSlot> = Mutex::new(StatusSlot {
+    button: 0,
+    item: 0,
+    menu: 0,
+    target: 0,
+});
+
+#[cfg(target_os = "macos")]
+static ROWS: Mutex<Vec<MenuDevice>> = Mutex::new(Vec::new());
 
 #[cfg(target_os = "macos")]
 fn steady_menu_font(button: *mut objc::runtime::Object) {
@@ -194,6 +231,127 @@ fn set_title_mac(title: &str) {
     }
     unsafe {
         let _: () = msg_send![button, setTitle: ns_string(title)];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_tooltip_mac(text: &str) {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+
+    let Ok(slot) = STATUS.lock() else {
+        return;
+    };
+    let button = slot.button as *mut Object;
+    if button.is_null() {
+        return;
+    }
+    unsafe {
+        let _: () = msg_send![button, setToolTip: ns_string(text)];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn add_separator(menu: *mut objc::runtime::Object) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let separator: *mut Object = msg_send![class!(NSMenuItem), separatorItem];
+        let _: () = msg_send![menu, addItem: separator];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn add_item(
+    menu: *mut objc::runtime::Object,
+    target: *mut objc::runtime::Object,
+    title: &str,
+    key: &str,
+    tag: isize,
+) -> *mut objc::runtime::Object {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
+        let item: *mut Object = msg_send![item, initWithTitle: ns_string(title) action: sel!(hopMenu:) keyEquivalent: ns_string(key)];
+        let _: () = msg_send![item, setTarget: target];
+        let _: () = msg_send![item, setTag: tag];
+        if !key.is_empty() {
+            // NSEventModifierFlagCommand
+            let _: () = msg_send![item, setKeyEquivalentModifierMask: 1usize << 20];
+        }
+        let _: () = msg_send![menu, addItem: item];
+        item
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_devices_mac(devices: Vec<MenuDevice>) {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+
+    if let Ok(mut rows) = ROWS.lock() {
+        *rows = devices.clone();
+    }
+    let Ok(slot) = STATUS.lock() else {
+        return;
+    };
+    let menu = slot.menu as *mut Object;
+    let target = slot.target as *mut Object;
+    if menu.is_null() || target.is_null() {
+        return;
+    }
+    let any_connected = devices.iter().any(|device| device.connected);
+    unsafe {
+        let _: () = msg_send![menu, removeAllItems];
+        add_item(menu, target, "Devices…", ",", OPEN);
+        add_separator(menu);
+        for (index, device) in devices.iter().enumerate() {
+            let item = add_item(menu, target, &device.name, "", DEVICE_TAG + index as isize);
+            // NSControlStateValueOn shows the checkmark: this device is on this Mac.
+            let state: isize = if device.connected { 1 } else { 0 };
+            let _: () = msg_send![item, setState: state];
+            let _: () = msg_send![item, setEnabled: device.connected];
+        }
+        if !devices.is_empty() {
+            add_separator(menu);
+        }
+        let send = add_item(menu, target, "Send to the other Mac", "", SEND_ALL);
+        let _: () = msg_send![send, setEnabled: any_connected];
+        add_separator(menu);
+        add_item(menu, target, "Quit Hop", "q", QUIT);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn notify_stayed_mac() {
+    use objc::runtime::{Class, Object};
+    use objc::{msg_send, sel, sel_impl};
+
+    let Some(note_class) = Class::get("NSUserNotification") else {
+        return;
+    };
+    let Some(center_class) = Class::get("NSUserNotificationCenter") else {
+        return;
+    };
+    unsafe {
+        let note: *mut Object = msg_send![note_class, alloc];
+        let note: *mut Object = msg_send![note, init];
+        if note.is_null() {
+            return;
+        }
+        let _: () = msg_send![note, setTitle: ns_string("Hop")];
+        let _: () = msg_send![note, setInformativeText: ns_string(
+            "The other Mac is not running Hop. Devices stayed on this Mac."
+        )];
+        let _: () = msg_send![note, setIdentifier: ns_string("hop-send-stayed")];
+        let center: *mut Object = msg_send![center_class, defaultUserNotificationCenter];
+        if center.is_null() {
+            return;
+        }
+        let _: () = msg_send![center, deliverNotification: note];
     }
 }
 

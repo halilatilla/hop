@@ -79,6 +79,7 @@ impl Hop {
     fn start(&mut self, cx: &mut Context<Self>) {
         self.refresh(cx);
         self.publish_status();
+        self.sync_menu();
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -110,7 +111,8 @@ impl Hop {
                     let hop = hop.clone();
                     cx.defer(move |cx| open_window(cx, &hop));
                 }
-                MenuCommand::Send => self.send(),
+                MenuCommand::SendAll => self.send_all(),
+                MenuCommand::SendOne(address) => self.send_one(&address),
                 MenuCommand::Quit => cx.quit(),
             }
         }
@@ -125,15 +127,48 @@ impl Hop {
             self.devices = devices;
             self.list_error = list_error;
             self.publish_status();
+            self.sync_menu();
             cx.notify();
         }
     }
 
-    fn send(&mut self) {
-        let connected = self.connected_chosen();
-        if let handoff::Effect::HandOff(addresses) = handoff::plan(self.peer, &connected) {
-            // Plan allowed the move. Delivery still disconnects nothing.
-            let _left_connected = handoff::deliver(&addresses);
+    fn send_all(&mut self) {
+        self.send_addresses(&self.connected_chosen());
+    }
+
+    fn send_one(&mut self, address: &str) {
+        let on_this_mac = self
+            .devices
+            .iter()
+            .any(|device| device.address == address && device.chosen && device.connected);
+        if !on_this_mac {
+            return;
+        }
+        self.send_addresses(std::slice::from_ref(&address.to_string()));
+    }
+
+    fn send_addresses(&mut self, targets: &[String]) {
+        let (mut outcome, ops) = handoff::run(
+            handoff::preflight_now(),
+            targets,
+            handoff::PeerReply::Failed,
+        );
+        if !handoff::execute(&ops) {
+            outcome = handoff::Outcome::Stayed(handoff::StayReason::PeerUnreachable);
+        }
+        self.report(outcome);
+    }
+
+    fn report(&mut self, outcome: handoff::Outcome) {
+        if !matches!(
+            outcome,
+            handoff::Outcome::Stayed(handoff::StayReason::PeerUnreachable)
+        ) {
+            return;
+        }
+        menu_bar::set_tooltip(&handoff::tooltip(self.peer));
+        if self.window.is_none() {
+            menu_bar::notify_stayed();
         }
     }
 
@@ -156,6 +191,21 @@ impl Hop {
         }
         self.status_label = label.clone();
         menu_bar::set_title(&label);
+        menu_bar::set_tooltip(&handoff::tooltip(self.peer));
+    }
+
+    fn sync_menu(&self) {
+        let rows = self
+            .devices
+            .iter()
+            .filter(|device| device.chosen)
+            .map(|device| menu_bar::MenuDevice {
+                address: device.address.clone(),
+                name: device.name.clone(),
+                connected: device.connected,
+            })
+            .collect();
+        menu_bar::set_devices(rows);
     }
 
     fn toggle(&mut self, address: &str, cx: &mut Context<Self>) {
@@ -172,6 +222,7 @@ impl Hop {
             eprintln!("hop: could not save the chosen devices ({err})");
         }
         self.publish_status();
+        self.sync_menu();
         cx.notify();
     }
 }
@@ -306,7 +357,7 @@ impl Render for Hop {
                     .text_size(px(16.0))
                     .cursor_pointer()
                     .child("Send to the other Mac")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, _cx| this.send())),
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, _cx| this.send_all())),
             )
             .child(
                 div()
@@ -321,7 +372,7 @@ fn summary(chosen: usize, peer: handoff::Peer) -> String {
     match (chosen, peer) {
         (0, handoff::Peer::Missing) => "Nothing chosen. The other Mac is not running Hop, so Send leaves everything connected here.".into(),
         (_, handoff::Peer::Missing) => format!(
-            "{chosen} chosen. The other Mac is not running Hop, so Send leaves them connected here."
+            "{chosen} chosen. A checked row in the menu is on this Mac. The other Mac is not running Hop, so Send leaves them here."
         ),
         (0, handoff::Peer::Ready) => "Nothing chosen.".into(),
         (count, handoff::Peer::Ready) => {

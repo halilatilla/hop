@@ -10,9 +10,11 @@ Hop runs in the menu bar. On a Mac the window stays closed until you choose **De
 
 A Bluetooth device such as a Magic Mouse or a pair of headphones connects to one Mac at a time, and it can remember more than one. Pair each device in System Settings → Bluetooth on both Macs once. After that, Hop does not ask you to pair again.
 
-**Send to the other Mac**, in the menu bar or the window, checks that the other Mac can take the chosen devices. If it cannot, Hop leaves them connected here. `IOBluetoothDevice` `closeConnection` belongs only on the path where that check passes, and `openConnection` belongs on the other Mac.
+**Send to the other Mac**, in the menu bar or the window, checks that the other Mac will take the devices before anything disconnects. A checked row in the menu is a device connected on this Mac; choosing that row sends only that device. A device that is not connected here is left alone, so sending again does not bring it back.
 
-The other Mac has to be awake and running Hop. If it is asleep, the devices have nowhere to land. This build has not discovered the other Mac yet, so Send does not disconnect anything.
+If the other Mac does not answer, nothing disconnects. If the devices do disconnect and the other Mac does not take them, Hop connects them again on this Mac. While the window is closed, that failure is one notification, replaced if you send again.
+
+The other Mac has to be awake and running Hop. This build has not discovered it yet, so the check fails and Send does not disconnect anything.
 
 ## What this build does
 
