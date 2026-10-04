@@ -14,41 +14,49 @@ pub struct PairedDevice {
 /// Eight seconds. A Bluetooth page slot is 0.625 ms, so 0x3200 is one try.
 const PAGE_SLOTS: u16 = 0x3200;
 
-pub fn disconnect_all_then<R: Send + 'static>(
-    addresses: &[String],
-    then: impl FnOnce(bool) -> R + Send + 'static,
-) -> R {
+#[cfg(target_os = "macos")]
+static PAIR_SEND: std::sync::Mutex<Option<std::sync::mpsc::Sender<bool>>> =
+    std::sync::Mutex::new(None);
+#[cfg(target_os = "macos")]
+static PAIR_HOLD: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+#[cfg(target_os = "macos")]
+static DELEGATE_HOLD: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+pub fn release_all(addresses: &[String]) -> bool {
     #[cfg(target_os = "macos")]
     {
         let addresses = addresses.to_vec();
-        on_main(move || {
-            for address in &addresses {
-                close_here(address);
+        on_main({
+            let addresses = addresses.clone();
+            move || {
+                for address in &addresses {
+                    release_here(address);
+                }
             }
-            let gone = addresses.iter().all(|address| !connected_here(address));
-            then(gone)
-        })
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let gone = on_main({
+                let addresses = addresses.clone();
+                move || addresses.iter().all(|address| !connected_here(address))
+            });
+            if gone || std::time::Instant::now() >= deadline {
+                return gone;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = addresses;
-        then(false)
+        false
     }
 }
 
 pub fn connect_all(addresses: &[String]) -> bool {
     #[cfg(target_os = "macos")]
     {
-        let addresses = addresses.to_vec();
-        on_main(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(16);
-            loop {
-                let ready = addresses.iter().all(|address| connect_here(address));
-                if ready || std::time::Instant::now() >= deadline {
-                    return ready;
-                }
-            }
-        })
+        addresses.iter().all(|address| connect_one(address))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -68,12 +76,51 @@ fn connected_here(address: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn close_here(address: &str) {
+fn release_here(address: &str) {
     use objc::{msg_send, sel, sel_impl};
     let _ = with_device(address, |device| unsafe {
-        let result: i32 = msg_send![device, closeConnection];
-        result == 0
+        let connected: bool = msg_send![device, isConnected];
+        if !connected {
+            return;
+        }
+        let remove = sel!(remove);
+        let can_remove: bool = msg_send![device, respondsToSelector: remove];
+        if can_remove {
+            let _: () = msg_send![device, remove];
+        } else {
+            let _: i32 = msg_send![device, closeConnection];
+        }
     });
+}
+
+#[cfg(target_os = "macos")]
+fn paired_here(address: &str) -> bool {
+    use objc::{msg_send, sel, sel_impl};
+    with_device(address, |device| unsafe {
+        let paired: bool = msg_send![device, isPaired];
+        paired
+    })
+    .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn connect_one(address: &str) -> bool {
+    let address_owned = address.to_string();
+    let opened = on_main({
+        let address = address_owned.clone();
+        move || paired_here(&address) && connect_here(&address)
+    });
+    if opened {
+        return true;
+    }
+    let still_paired = on_main({
+        let address = address_owned.clone();
+        move || paired_here(&address) || connected_here(&address)
+    });
+    if still_paired {
+        return on_main(move || connected_here(&address_owned));
+    }
+    pair_here(&address_owned)
 }
 
 #[cfg(target_os = "macos")]
@@ -94,6 +141,167 @@ fn connect_here(address: &str) -> bool {
         result == 0
     });
     connected_here(address)
+}
+
+#[cfg(target_os = "macos")]
+fn pair_here(address: &str) -> bool {
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel();
+    {
+        let Ok(mut slot) = PAIR_SEND.lock() else {
+            return false;
+        };
+        *slot = Some(tx);
+    }
+    let started = on_main({
+        let address = address.to_string();
+        move || begin_pair(&address)
+    });
+    if !started {
+        if let Ok(mut slot) = PAIR_SEND.lock() {
+            *slot = None;
+        }
+        return false;
+    }
+    let paired = match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        Ok(paired) => paired,
+        Err(_) => {
+            if let Ok(mut slot) = PAIR_SEND.lock() {
+                *slot = None;
+            }
+            false
+        }
+    };
+    let connected = on_main({
+        let address = address.to_string();
+        move || connect_here(&address)
+    });
+    end_pair();
+    paired && connected
+}
+
+#[cfg(target_os = "macos")]
+fn begin_pair(address: &str) -> bool {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    let Some(class) = pair_class() else {
+        return false;
+    };
+    with_device(address, |device| unsafe {
+        let pair: *mut Object = msg_send![class!(IOBluetoothDevicePair), pairWithDevice: device];
+        if pair.is_null() {
+            return false;
+        }
+        let delegate: *mut Object = msg_send![class, new];
+        if delegate.is_null() {
+            return false;
+        }
+        let _: () = msg_send![pair, retain];
+        let _: () = msg_send![pair, setDelegate: delegate];
+        let result: i32 = msg_send![pair, start];
+        if result != 0 {
+            let _: () = msg_send![pair, setDelegate: std::ptr::null::<Object>()];
+            let _: () = msg_send![pair, release];
+            let _: () = msg_send![delegate, release];
+            return false;
+        }
+        if let Ok(mut hold) = PAIR_HOLD.lock() {
+            *hold = pair as usize;
+        }
+        if let Ok(mut hold) = DELEGATE_HOLD.lock() {
+            *hold = delegate as usize;
+        }
+        true
+    })
+    .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn end_pair() {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+
+    on_main(|| unsafe {
+        let pair = PAIR_HOLD.lock().map(|mut hold| {
+            let pair = *hold;
+            *hold = 0;
+            pair
+        });
+        let delegate = DELEGATE_HOLD.lock().map(|mut hold| {
+            let delegate = *hold;
+            *hold = 0;
+            delegate
+        });
+        if let Ok(pair) = pair {
+            if pair != 0 {
+                let pair = pair as *mut Object;
+                let _: () = msg_send![pair, setDelegate: std::ptr::null::<Object>()];
+                let _: () = msg_send![pair, release];
+            }
+        }
+        if let Ok(delegate) = delegate {
+            if delegate != 0 {
+                let _: () = msg_send![delegate as *mut Object, release];
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn pair_class() -> Option<*const objc::runtime::Class> {
+    use objc::declare::ClassDecl;
+    use objc::runtime::{Object, Sel};
+    use objc::{class, sel, sel_impl};
+    use std::sync::OnceLock;
+
+    static CLASS: OnceLock<usize> = OnceLock::new();
+    let bits = CLASS.get_or_init(|| {
+        let Some(mut decl) = ClassDecl::new("HopDevicePair", class!(NSObject)) else {
+            return 0;
+        };
+        unsafe {
+            decl.add_method(
+                sel!(devicePairingFinished:error:),
+                pairing_finished as extern "C" fn(&Object, Sel, *mut Object, i32),
+            );
+            decl.add_method(
+                sel!(devicePairingUserConfirmationRequest:numericValue:),
+                pairing_confirm as extern "C" fn(&Object, Sel, *mut Object, u32),
+            );
+        }
+        decl.register() as *const objc::runtime::Class as usize
+    });
+    let class = *bits as *const objc::runtime::Class;
+    if class.is_null() { None } else { Some(class) }
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn pairing_finished(
+    _this: &objc::runtime::Object,
+    _: objc::runtime::Sel,
+    _sender: *mut objc::runtime::Object,
+    error: i32,
+) {
+    if let Ok(mut slot) = PAIR_SEND.lock() {
+        if let Some(tx) = slot.take() {
+            let _ = tx.send(error == 0);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn pairing_confirm(
+    _this: &objc::runtime::Object,
+    _: objc::runtime::Sel,
+    sender: *mut objc::runtime::Object,
+    _numeric: u32,
+) {
+    use objc::{msg_send, sel, sel_impl};
+    unsafe {
+        let _: () = msg_send![sender, replyUserConfirmation: true];
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -290,24 +498,40 @@ fn with_device<T>(address: &str, f: impl FnOnce(*mut objc::runtime::Object) -> T
     }
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
-        let list: *mut Object = msg_send![device_class, pairedDevices];
-        let mut found = None;
-        if !list.is_null() {
+        let mut device: *mut Object = std::ptr::null_mut();
+        if let Ok(text) = std::ffi::CString::new(want.clone()) {
+            let name: *mut Object =
+                msg_send![class!(NSString), stringWithUTF8String: text.as_ptr()];
+            if !name.is_null() {
+                device = msg_send![device_class, deviceWithAddressString: name];
+            }
+        }
+        let list: *mut Object = if !device.is_null() {
+            std::ptr::null_mut()
+        } else {
+            msg_send![device_class, pairedDevices]
+        };
+        if device.is_null() && !list.is_null() {
             let count: usize = msg_send![list, count];
             for index in 0..count {
-                let device: *mut Object = msg_send![list, objectAtIndex: index];
-                if device.is_null() {
+                let candidate: *mut Object = msg_send![list, objectAtIndex: index];
+                if candidate.is_null() {
                     continue;
                 }
-                let Some(have) = ns_string(msg_send![device, addressString]) else {
+                let Some(have) = ns_string(msg_send![candidate, addressString]) else {
                     continue;
                 };
                 if crate::wire::canon(&have) == want {
-                    found = Some(f(device));
+                    device = candidate;
                     break;
                 }
             }
         }
+        let found = if device.is_null() {
+            None
+        } else {
+            Some(f(device))
+        };
         if !pool.is_null() {
             let _: () = msg_send![pool, drain];
         }

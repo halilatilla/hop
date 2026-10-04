@@ -239,26 +239,13 @@ pub fn handover(target: Target, addresses: Vec<String>) -> crate::handoff::Outco
         return Outcome::Stayed(StayReason::PeerUnreachable);
     };
     let (mut stream, id, sealed) = release;
-    let (mut stream, radio) = crate::bluetooth::disconnect_all_then(&addresses, move |gone| {
-        if !gone {
-            return (stream, Radio::Held);
-        }
-        if wire::write_frame(&mut stream, &sealed).is_ok() {
-            (stream, Radio::Told)
-        } else {
-            (stream, Radio::Dropped)
-        }
-    });
-    match radio {
-        Radio::Held => {
-            let _ = crate::bluetooth::connect_all(&addresses);
-            return Outcome::Stayed(StayReason::StillHere);
-        }
-        Radio::Dropped => {
-            let _ = crate::bluetooth::connect_all(&addresses);
-            return Outcome::Reconnected(addresses);
-        }
-        Radio::Told => {}
+    if !crate::bluetooth::release_all(&addresses) {
+        let _ = crate::bluetooth::connect_all(&addresses);
+        return Outcome::Stayed(StayReason::StillHere);
+    }
+    if wire::write_frame(&mut stream, &sealed).is_err() {
+        let _ = crate::bluetooth::connect_all(&addresses);
+        return Outcome::Reconnected(addresses);
     }
     let reply = read_release(&target, &mut stream, &id).ok();
     match crate::handoff::after_release(reply.as_deref()) {
@@ -268,12 +255,6 @@ pub fn handover(target: Target, addresses: Vec<String>) -> crate::handoff::Outco
             Outcome::Reconnected(addresses)
         }
     }
-}
-
-enum Radio {
-    Held,
-    Told,
-    Dropped,
 }
 
 fn prepare_release(target: &Target, addresses: &[String]) -> Option<(TcpStream, String, Vec<u8>)> {
@@ -287,7 +268,7 @@ fn prepare_release(target: &Target, addresses: &[String]) -> Option<(TcpStream, 
     };
     let stream = connect_host(&target.host, target.port).ok()?;
     nosigpipe(&stream);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(24)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(70)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     Some((stream, id, wire::seal(&identity, &body)))
 }

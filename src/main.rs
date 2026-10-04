@@ -218,7 +218,7 @@ impl Hop {
         let Phase::Sending { started } = self.phase else {
             return;
         };
-        let timed_out = started.elapsed() > Duration::from_secs(60);
+        let timed_out = started.elapsed() > Duration::from_secs(90);
         let finished = self
             .flight
             .as_ref()

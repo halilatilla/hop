@@ -93,7 +93,9 @@ pub fn after_release(reply: Option<&str>) -> ReleaseResult {
 
 pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
     match reason {
-        StayReason::NothingHere => None,
+        StayReason::NothingHere => {
+            Some("Nothing connected here is chosen. Check the device in the menu, then send it.")
+        }
         StayReason::PeerUnreachable => {
             Some("The other Mac is not running Hop. Devices stayed on this Mac.")
         }

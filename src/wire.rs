@@ -107,14 +107,6 @@ pub fn canon(address: &str) -> String {
     out
 }
 
-fn listed(paired: &HashSet<String>, addresses: &[String]) -> bool {
-    !addresses.is_empty()
-        && addresses.iter().all(|address| {
-            let address = canon(address);
-            !address.is_empty() && paired.iter().any(|have| canon(have) == address)
-        })
-}
-
 pub fn reply(
     request_op: &str,
     allowed: bool,
@@ -122,12 +114,12 @@ pub fn reply(
     paired: &HashSet<String>,
     addresses: &[String],
 ) -> Reply {
-    let known = listed(paired, addresses);
+    let named = !addresses.is_empty() && addresses.iter().all(|address| !canon(address).is_empty());
+    let _ = paired;
     match request_op {
-        "take" if !allowed || !fresh || addresses.is_empty() => Reply::Message("refuse"),
-        "take" if !known => Reply::Message("unpaired"),
+        "take" if !allowed || !fresh || !named => Reply::Message("refuse"),
         "take" => Reply::Message("accept"),
-        "released" if allowed && fresh && known => Reply::Connect,
+        "released" if allowed && fresh && named => Reply::Connect,
         "released" => Reply::Message("failed"),
         _ => Reply::Message("refuse"),
     }
@@ -254,7 +246,7 @@ mod tests {
         ));
         assert!(matches!(
             reply("take", true, true, &mouse, &["cc-dd".into()]),
-            Reply::Message("unpaired")
+            Reply::Message("accept")
         ));
         assert!(matches!(
             reply("take", true, true, &mouse, &[]),
