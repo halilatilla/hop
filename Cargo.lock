@@ -2331,6 +2331,8 @@ dependencies = [
  "gpui_platform",
  "objc",
  "raw-window-handle",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -6,6 +6,7 @@ use std::sync::Mutex;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
     Open,
+    Send,
     Quit,
 }
 
@@ -60,7 +61,7 @@ fn install_mac() {
                 item: item as usize,
             };
         }
-        set_title_mac("Hop");
+        steady_menu_font(button);
         install_app_menu(app, target);
     }
 
@@ -89,7 +90,8 @@ fn install_mac() {
         let tag: isize = unsafe { msg_send![sender, tag] };
         let command = match tag {
             1 => MenuCommand::Open,
-            2 => MenuCommand::Quit,
+            2 => MenuCommand::Send,
+            3 => MenuCommand::Quit,
             _ => return,
         };
         if let Ok(mut pending) = PENDING.lock() {
@@ -100,9 +102,10 @@ fn install_mac() {
     fn status_menu(target: *mut Object) -> *mut Object {
         unsafe {
             let menu: *mut Object = msg_send![class!(NSMenu), new];
-            add_item(menu, target, "Open Hop", "", 1);
+            add_item(menu, target, "Devices…", ",", 1);
+            add_item(menu, target, "Send to the other Mac", "", 2);
             add_separator(menu);
-            add_item(menu, target, "Quit Hop", "q", 2);
+            add_item(menu, target, "Quit Hop", "q", 3);
             menu
         }
     }
@@ -114,9 +117,10 @@ fn install_mac() {
             let _: () = msg_send![main, addItem: app_item];
             let submenu: *mut Object = msg_send![class!(NSMenu), new];
             let _: () = msg_send![submenu, setTitle: ns_string("Hop")];
-            add_item(submenu, target, "Open Hop", "", 1);
+            add_item(submenu, target, "Devices…", ",", 1);
+            add_item(submenu, target, "Send to the other Mac", "", 2);
             add_separator(submenu);
-            add_item(submenu, target, "Quit Hop", "q", 2);
+            add_item(submenu, target, "Quit Hop", "q", 3);
             let _: () = msg_send![app_item, setSubmenu: submenu];
             let _: () = msg_send![app, setMainMenu: main];
         }
@@ -152,6 +156,28 @@ struct StatusSlot {
 
 #[cfg(target_os = "macos")]
 static STATUS: Mutex<StatusSlot> = Mutex::new(StatusSlot { button: 0, item: 0 });
+
+#[cfg(target_os = "macos")]
+fn steady_menu_font(button: *mut objc::runtime::Object) {
+    use objc::{class, msg_send, sel, sel_impl};
+
+    if button.is_null() {
+        return;
+    }
+    unsafe {
+        let current: *mut objc::runtime::Object = msg_send![button, font];
+        let size: f64 = if current.is_null() {
+            0.0
+        } else {
+            msg_send![current, pointSize]
+        };
+        let font: *mut objc::runtime::Object =
+            msg_send![class!(NSFont), monospacedDigitSystemFontOfSize: size weight: 0.0f64];
+        if !font.is_null() {
+            let _: () = msg_send![button, setFont: font];
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn set_title_mac(title: &str) {

@@ -1,5 +1,6 @@
 mod bluetooth;
 mod choice;
+mod handoff;
 mod menu_bar;
 
 use std::collections::HashSet;
@@ -32,6 +33,8 @@ fn main() {
         let hop = cx.new(|cx| Hop::new(cx));
         cx.set_global(HopKeepAlive(hop.clone()));
         hop.update(cx, |hop, cx| hop.start(cx));
+        // The menu bar is the app. Other platforms have no status item.
+        #[cfg(not(target_os = "macos"))]
         open_window(cx, &hop);
     });
 }
@@ -42,6 +45,8 @@ struct Hop {
     devices: Vec<DeviceView>,
     list_error: Option<String>,
     chosen: HashSet<String>,
+    peer: handoff::Peer,
+    status_label: String,
     ticks: u32,
 }
 
@@ -51,6 +56,7 @@ struct DeviceView {
     name: String,
     detail: String,
     chosen: bool,
+    connected: bool,
 }
 
 impl Hop {
@@ -60,13 +66,19 @@ impl Hop {
             focus: cx.focus_handle(),
             devices: Vec::new(),
             list_error: None,
-            chosen: choice::load(&choice::chosen_path()),
+            chosen: choice::load(&choice::choice_path()).unwrap_or_else(|err| {
+                eprintln!("hop: using no chosen devices ({err})");
+                HashSet::new()
+            }),
+            peer: handoff::observe_peer(),
+            status_label: String::new(),
             ticks: 0,
         }
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
         self.refresh(cx);
+        self.publish_status();
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -82,6 +94,12 @@ impl Hop {
 
     fn on_tick(&mut self, cx: &mut Context<Self>) {
         self.ticks = self.ticks.wrapping_add(1);
+        let peer = handoff::observe_peer();
+        if peer != self.peer {
+            self.peer = peer;
+            self.publish_status();
+            cx.notify();
+        }
         if self.ticks.is_multiple_of(8) {
             self.refresh(cx);
         }
@@ -92,6 +110,7 @@ impl Hop {
                     let hop = hop.clone();
                     cx.defer(move |cx| open_window(cx, &hop));
                 }
+                MenuCommand::Send => self.send(),
                 MenuCommand::Quit => cx.quit(),
             }
         }
@@ -105,8 +124,38 @@ impl Hop {
         if devices != self.devices || list_error != self.list_error {
             self.devices = devices;
             self.list_error = list_error;
+            self.publish_status();
             cx.notify();
         }
+    }
+
+    fn send(&mut self) {
+        let connected = self.connected_chosen();
+        if let handoff::Effect::HandOff(addresses) = handoff::plan(self.peer, &connected) {
+            // Plan allowed the move. Delivery still disconnects nothing.
+            let _left_connected = handoff::deliver(&addresses);
+        }
+    }
+
+    fn connected_chosen(&self) -> Vec<String> {
+        self.devices
+            .iter()
+            .filter(|device| device.chosen && device.connected)
+            .map(|device| device.address.clone())
+            .collect()
+    }
+
+    fn chosen_count(&self) -> usize {
+        self.devices.iter().filter(|device| device.chosen).count()
+    }
+
+    fn publish_status(&mut self) {
+        let label = handoff::status_label(self.chosen_count(), self.peer);
+        if self.status_label == label {
+            return;
+        }
+        self.status_label = label.clone();
+        menu_bar::set_title(&label);
     }
 
     fn toggle(&mut self, address: &str, cx: &mut Context<Self>) {
@@ -119,9 +168,10 @@ impl Hop {
                 device.chosen = chosen;
             }
         }
-        if let Err(err) = choice::save(&choice::chosen_path(), &self.chosen) {
+        if let Err(err) = choice::save(&choice::choice_path(), &self.chosen) {
             eprintln!("hop: could not save the chosen devices ({err})");
         }
+        self.publish_status();
         cx.notify();
     }
 }
@@ -136,6 +186,7 @@ fn views(list: Vec<PairedDevice>, chosen: &HashSet<String>) -> Vec<DeviceView> {
             };
             DeviceView {
                 chosen: chosen.contains(&device.address),
+                connected: device.connected,
                 detail: format!("{} · {connection}", device.kind),
                 address: device.address,
                 name: device.name,
@@ -192,7 +243,8 @@ fn window_options(cx: &App) -> WindowOptions {
 
 impl Render for Hop {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let chosen_count = self.devices.iter().filter(|device| device.chosen).count();
+        let chosen_count = self.chosen_count();
+        let peer = self.peer;
         let mut list = div()
             .id("device-list")
             .flex()
@@ -242,20 +294,39 @@ impl Render for Hop {
             .child(list)
             .child(
                 div()
+                    .id("send-devices")
+                    .h(px(44.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(10.0))
+                    .bg(rgb(INK))
+                    .text_color(rgb(PAPER))
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(16.0))
+                    .cursor_pointer()
+                    .child("Send to the other Mac")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, _cx| this.send())),
+            )
+            .child(
+                div()
                     .text_size(px(13.0))
                     .text_color(rgb(MUTED))
-                    .child(summary(chosen_count)),
+                    .child(summary(chosen_count, peer)),
             )
     }
 }
 
-fn summary(chosen: usize) -> String {
-    match chosen {
-        0 => "Nothing chosen. Tap a device to include it. Hop will not disconnect anything until the other Mac can take it.".into(),
-        1 => "1 device will move, once the other Mac is awake and running Hop.".into(),
-        count => format!(
-            "{count} devices will move, once the other Mac is awake and running Hop."
+fn summary(chosen: usize, peer: handoff::Peer) -> String {
+    match (chosen, peer) {
+        (0, handoff::Peer::Missing) => "Nothing chosen. The other Mac is not running Hop, so Send leaves everything connected here.".into(),
+        (_, handoff::Peer::Missing) => format!(
+            "{chosen} chosen. The other Mac is not running Hop, so Send leaves them connected here."
         ),
+        (0, handoff::Peer::Ready) => "Nothing chosen.".into(),
+        (count, handoff::Peer::Ready) => {
+            format!("{count} chosen. Send moves the ones that are connected.")
+        }
     }
 }
 
