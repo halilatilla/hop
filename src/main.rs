@@ -54,11 +54,11 @@ impl Palette {
     fn dark() -> Self {
         Self {
             text: 0xf4efe8,
-            paper: 0x1c1916,
-            card: 0x28241f,
+            paper: 0x161412,
+            card: 0x2a2622,
             muted: 0xb7aa9c,
-            line: 0x3c362f,
-            stroke: 0x6d645c,
+            line: 0x3f3934,
+            stroke: 0x8a7d72,
             good: 0x8fbf9a,
             good_wash: 0x1e3328,
             wash: 0x3a2f22,
@@ -702,7 +702,7 @@ fn open_window(cx: &mut App, hop: &Entity<Hop>) {
 
 fn window_options(cx: &App) -> WindowOptions {
     WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(400.0), px(520.0)), cx)),
+        window_bounds: Some(WindowBounds::centered(size(px(380.0), px(460.0)), cx)),
         titlebar: Some(TitlebarOptions {
             title: Some("Hop".into()),
             appears_transparent: true,
@@ -732,7 +732,7 @@ impl Render for Hop {
             .flex_col()
             .flex_1()
             .min_h(px(0.0))
-            .gap(px(8.0))
+            .gap(px(6.0))
             .overflow_y_scroll();
         if let Some(error) = list_error {
             list = list.child(note(error, colors));
@@ -748,7 +748,11 @@ impl Render for Hop {
                     colors,
                 ));
             } else {
-                for device in &shared {
+                let mut group = section_group(colors);
+                for (index, device) in shared.iter().enumerate() {
+                    if index > 0 {
+                        group = group.child(row_rule(colors));
+                    }
                     let action = if moving.contains(&device.address) {
                         RowAction::Connecting
                     } else if device.connected {
@@ -758,19 +762,25 @@ impl Render for Hop {
                     } else {
                         RowAction::Connect
                     };
-                    list = list.child(device_row(device, action, colors, cx));
+                    group = group.child(device_row(device, action, colors, cx));
                 }
+                list = list.child(group);
             }
             if !mine.is_empty() {
                 list = list.child(section_label("On this Mac", colors));
-                for device in &mine {
+                let mut group = section_group(colors);
+                for (index, device) in mine.iter().enumerate() {
+                    if index > 0 {
+                        group = group.child(row_rule(colors));
+                    }
                     let action = if any_moving {
                         RowAction::Wait
                     } else {
                         RowAction::Share
                     };
-                    list = list.child(device_row(device, action, colors, cx));
+                    group = group.child(device_row(device, action, colors, cx));
                 }
+                list = list.child(group);
             }
         }
 
@@ -783,7 +793,7 @@ impl Render for Hop {
             .pt(px(52.0))
             .px(px(20.0))
             .pb(px(16.0))
-            .gap(px(16.0));
+            .gap(px(14.0));
         if seen == link::Seen::Nearby && !allows.is_empty() {
             for allow in &allows {
                 let id = allow.id.clone();
@@ -833,9 +843,7 @@ fn device_row(
         .items_center()
         .gap(px(10.0))
         .px(px(12.0))
-        .py(px(10.0))
-        .rounded(px(10.0))
-        .bg(rgb(colors.card))
+        .py(px(8.0))
         .child(presence_mark(here, colors.card, colors))
         .child(
             div()
@@ -876,11 +884,9 @@ fn device_row(
             colors,
             on_click,
         )),
-        RowAction::Share => row.child(action_button(
+        RowAction::Share => row.child(outline_button(
             format!("act-{}", device.address),
             "Share",
-            false,
-            true,
             colors,
             on_click,
         )),
@@ -906,7 +912,7 @@ fn place_line(kind: &str, place: &str) -> String {
 
 fn peer_status(seen: link::Seen, first: bool, colors: Palette) -> impl IntoElement {
     let (filled, title, detail) = match seen {
-        link::Seen::Ready => (true, link::other_mac(), "Ready"),
+        link::Seen::Ready => (true, link::other_mac(), "On the network"),
         link::Seen::Crowd => (
             false,
             "More than one Mac".to_string(),
@@ -991,11 +997,24 @@ fn allow_card(
 
 fn section_label(text: &str, colors: Palette) -> impl IntoElement {
     div()
-        .pt(px(4.0))
+        .pt(px(8.0))
+        .px(px(12.0))
         .text_size(px(12.0))
         .font_weight(FontWeight::BOLD)
         .text_color(rgb(colors.muted))
         .child(text.to_string())
+}
+
+fn section_group(colors: Palette) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .rounded(px(10.0))
+        .bg(rgb(colors.card))
+}
+
+fn row_rule(colors: Palette) -> impl IntoElement {
+    div().h(px(1.0)).ml(px(32.0)).bg(rgb(colors.line))
 }
 
 fn note(text: impl Into<String>, colors: Palette) -> impl IntoElement {
@@ -1058,12 +1077,13 @@ fn action_button(
     };
     let button = div()
         .id(id)
-        .h(px(30.0))
+        .h(px(26.0))
         .px(px(12.0))
         .flex()
+        .flex_shrink_0()
         .items_center()
         .justify_center()
-        .rounded(px(8.0))
+        .rounded(px(13.0))
         .bg(rgb(bg))
         .text_color(rgb(ink))
         .text_size(px(13.0))
@@ -1086,18 +1106,18 @@ fn outline_button(
         .id(id)
         .p(px(1.0))
         .flex_shrink_0()
-        .rounded(px(8.0))
+        .rounded(px(13.0))
         .bg(rgb(colors.stroke))
         .cursor_pointer()
         .on_click(on_click)
         .child(
             div()
-                .h(px(28.0))
+                .h(px(24.0))
                 .px(px(11.0))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(7.0))
+                .rounded(px(12.0))
                 .bg(rgb(colors.card))
                 .text_size(px(13.0))
                 .font_weight(FontWeight::BOLD)
