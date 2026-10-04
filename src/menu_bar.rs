@@ -21,6 +21,7 @@ pub struct MenuDevice {
 const OPEN: isize = 1;
 const SEND_ALL: isize = 2;
 const QUIT: isize = 3;
+const ABOUT: isize = 4;
 const DEVICE_TAG: isize = 100;
 
 static PENDING: Mutex<Vec<MenuCommand>> = Mutex::new(Vec::new());
@@ -96,6 +97,7 @@ fn install_mac() {
             };
         }
         steady_menu_font(button);
+        install_images(app, button);
         install_app_menu(app, target);
     }
 
@@ -122,6 +124,10 @@ fn install_mac() {
 
     extern "C" fn menu_action(_this: &objc::runtime::Object, _: Sel, sender: *mut Object) {
         let tag: isize = unsafe { msg_send![sender, tag] };
+        if tag == ABOUT {
+            show_about();
+            return;
+        }
         let command = match tag {
             OPEN => MenuCommand::Open,
             SEND_ALL => MenuCommand::SendAll,
@@ -146,6 +152,8 @@ fn install_mac() {
     fn status_menu(target: *mut Object) -> *mut Object {
         unsafe {
             let menu: *mut Object = msg_send![class!(NSMenu), new];
+            add_item(menu, target, "About Hop", "", ABOUT);
+            add_separator(menu);
             add_item(menu, target, "Devices…", ",", OPEN);
             add_item(menu, target, "Send to the other Mac", "", SEND_ALL);
             add_separator(menu);
@@ -161,6 +169,8 @@ fn install_mac() {
             let _: () = msg_send![main, addItem: app_item];
             let submenu: *mut Object = msg_send![class!(NSMenu), new];
             let _: () = msg_send![submenu, setTitle: ns_string("Hop")];
+            add_item(submenu, target, "About Hop", "", ABOUT);
+            add_separator(submenu);
             add_item(submenu, target, "Devices…", ",", OPEN);
             add_item(submenu, target, "Send to the other Mac", "", SEND_ALL);
             add_separator(submenu);
@@ -302,6 +312,8 @@ fn set_devices_mac(devices: Vec<MenuDevice>) {
     let any_connected = devices.iter().any(|device| device.connected);
     unsafe {
         let _: () = msg_send![menu, removeAllItems];
+        add_item(menu, target, "About Hop", "", ABOUT);
+        add_separator(menu);
         add_item(menu, target, "Devices…", ",", OPEN);
         add_separator(menu);
         for (index, device) in devices.iter().enumerate() {
@@ -344,6 +356,63 @@ fn notify_stayed_mac() {
             return;
         }
         let _: () = msg_send![center, deliverNotification: note];
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct NsSize {
+    width: f64,
+    height: f64,
+}
+
+#[cfg(target_os = "macos")]
+fn install_images(app: *mut objc::runtime::Object, button: *mut objc::runtime::Object) {
+    use objc::runtime::YES;
+    use objc::{msg_send, sel, sel_impl};
+
+    unsafe {
+        let mark = ns_image(include_bytes!("../assets/MenuBarTemplate.png"));
+        if !button.is_null() && !mark.is_null() {
+            let _: () = msg_send![mark, setTemplate: YES];
+            let _: () = msg_send![mark, setSize: NsSize { width: 18.0, height: 18.0 }];
+            let _: () = msg_send![button, setImage: mark];
+            // NSImageLeft: the title stays beside the mark.
+            let _: () = msg_send![button, setImagePosition: 2isize];
+        }
+        let icon = ns_image(include_bytes!("../assets/AppIcon.png"));
+        if !app.is_null() && !icon.is_null() {
+            let _: () = msg_send![app, setApplicationIconImage: icon];
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn show_about() {
+    use objc::runtime::{Object, YES};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![app, activateIgnoringOtherApps: YES];
+        let _: *mut Object =
+            msg_send![app, orderFrontStandardAboutPanel: std::ptr::null::<Object>()];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ns_image(bytes: &[u8]) -> *mut objc::runtime::Object {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let data: *mut Object =
+            msg_send![class!(NSData), dataWithBytes: bytes.as_ptr() length: bytes.len()];
+        if data.is_null() {
+            return std::ptr::null_mut();
+        }
+        let image: *mut Object = msg_send![class!(NSImage), alloc];
+        msg_send![image, initWithData: data]
     }
 }
 

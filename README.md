@@ -25,7 +25,7 @@ The window lists every device paired in Bluetooth. Tap one to include it. The ch
 
 Hop writes a temporary file and renames it into place. A file that does not parse is an error, and Hop starts with nothing chosen. If `choice.json` is missing and an older `chosen.txt` is there, Hop reads that list.
 
-The menu is **Devices…**, **Send to the other Mac**, and **Quit Hop**. Closing the window leaves Hop running.
+The menu is **About Hop**, **Devices…**, **Send to the other Mac**, and **Quit Hop**. Closing the window leaves Hop running.
 
 macOS asks for Bluetooth access so Hop can read the paired devices. Local Network access comes when the two Macs link.
 
