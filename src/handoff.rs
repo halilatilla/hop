@@ -137,7 +137,7 @@ pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
         StayReason::StillHere => Some("The devices stayed on this Mac."),
         StayReason::NothingThere => Some("No shared device is on the other Mac."),
         StayReason::NothingShared => {
-            Some("Nothing is on the shared list. Open Devices and check a device.")
+            Some("Nothing is on the shared list. On the Mac that has the device, share it.")
         }
         StayReason::AlreadyHere => Some("Those shared devices are already on this Mac."),
         StayReason::Busy => Some("Hop is already moving a device."),
@@ -194,9 +194,11 @@ pub fn status_label(chosen: usize, peer: Peer) -> String {
 pub fn tooltip(peer: Peer) -> String {
     match peer {
         Peer::Missing => {
-            "The other Mac is not running Hop. Send leaves devices on this Mac.".to_string()
+            "The other Mac is not running Hop. Shared devices stay where they are.".to_string()
         }
-        Peer::Ready => "Use here brings the shared devices to this Mac.".to_string(),
+        Peer::Ready => {
+            "The shared list is on both Macs. Click a device the other Mac has.".to_string()
+        }
     }
 }
 
@@ -309,11 +311,11 @@ mod tests {
         assert_eq!(status_label(1, Peer::Ready), "1");
         assert_eq!(
             tooltip(Peer::Missing),
-            "The other Mac is not running Hop. Send leaves devices on this Mac."
+            "The other Mac is not running Hop. Shared devices stay where they are."
         );
         assert_eq!(
             tooltip(Peer::Ready),
-            "Use here brings the shared devices to this Mac."
+            "The shared list is on both Macs. Click a device the other Mac has."
         );
     }
 }

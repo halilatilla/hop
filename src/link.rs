@@ -245,78 +245,6 @@ pub fn target() -> Option<Target> {
     found
 }
 
-pub fn handover(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome {
-    let Some(_guard) = begin_move() else {
-        return crate::handoff::Outcome::Stayed(crate::handoff::StayReason::Busy);
-    };
-    handover_move(target, addresses)
-}
-
-fn handover_move(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome {
-    use crate::handoff::{AskResult, Outcome, ReleaseResult, StayReason};
-
-    let addresses: Vec<String> = addresses
-        .iter()
-        .map(|address| wire::canon(address))
-        .filter(|address| !address.is_empty())
-        .collect();
-    if addresses.is_empty() {
-        return Outcome::Stayed(StayReason::NothingHere);
-    }
-    let asked = exchange(&target, "take", &addresses, Duration::from_secs(8)).ok();
-    match crate::handoff::after_ask(asked.as_ref().map(|body| body.op.as_str())) {
-        AskResult::Stay(reason) => return Outcome::Stayed(reason),
-        AskResult::Disconnect => {}
-    }
-    let Some(release) = prepare_release(&target, &addresses) else {
-        return Outcome::Stayed(StayReason::PeerUnreachable);
-    };
-    let (mut stream, id, sealed) = release;
-    if !crate::bluetooth::release_all(&addresses) {
-        let _ = crate::bluetooth::connect_all(&addresses);
-        return Outcome::Stayed(StayReason::StillHere);
-    }
-    if wire::write_frame(&mut stream, &sealed).is_err() {
-        let _ = crate::bluetooth::connect_all(&addresses);
-        return Outcome::Reconnected(addresses);
-    }
-    let reply = read_release(&target, &mut stream, &id).ok();
-    match crate::handoff::after_release(reply.as_deref()) {
-        ReleaseResult::Moved => Outcome::Moved(addresses),
-        ReleaseResult::Reconnect => {
-            let _ = crate::bluetooth::connect_all(&addresses);
-            Outcome::Reconnected(addresses)
-        }
-    }
-}
-
-fn prepare_release(target: &Target, addresses: &[String]) -> Option<(TcpStream, String, Vec<u8>)> {
-    let identity = world()?.lock().ok()?.identity.clone();
-    let id = wire::new_id();
-    let body = Body {
-        op: "released".to_string(),
-        id: id.clone(),
-        exp: wire::now_secs().saturating_add(30),
-        addresses: addresses.to_vec(),
-        names: Vec::new(),
-    };
-    let stream = connect_host(&target.host, target.port).ok()?;
-    nosigpipe(&stream);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(70)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-    Some((stream, id, wire::seal(&identity, &body)))
-}
-
-fn read_release(target: &Target, stream: &mut TcpStream, id: &str) -> Result<String, String> {
-    let reply_bytes = wire::read_frame(stream).map_err(|err| err.to_string())?;
-    let (key, reply) =
-        wire::unseal(&reply_bytes).ok_or_else(|| "The other Mac sent a bad reply.".to_string())?;
-    if key != target.key || reply.id != id {
-        return Err("The other Mac sent an unexpected reply.".into());
-    }
-    Ok(reply.op)
-}
-
 pub fn set_shared(addresses: HashSet<String>) {
     let Some(world) = world() else {
         return;
@@ -490,15 +418,6 @@ pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome 
             }
         }
     }
-}
-
-pub fn exchange(
-    target: &Target,
-    op: &str,
-    addresses: &[String],
-    timeout: Duration,
-) -> Result<Body, String> {
-    message(target, op, addresses, &[], timeout)
 }
 
 fn message(

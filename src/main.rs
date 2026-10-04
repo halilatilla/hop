@@ -127,11 +127,7 @@ impl Hop {
         let allows = link::pending();
         let became_ready =
             matches!(seen, link::Seen::Ready) && !matches!(self.seen, link::Seen::Ready);
-        if became_ready
-            || (matches!(seen, link::Seen::Ready)
-                && !self.choice.quiet.is_empty()
-                && self.ticks.is_multiple_of(40))
-        {
+        if matches!(seen, link::Seen::Ready) && (became_ready || self.ticks.is_multiple_of(32)) {
             self.push_list();
         }
         if seen != self.seen || allows != self.allows {
@@ -155,9 +151,6 @@ impl Hop {
                     let hop = hop.clone();
                     cx.defer(move |cx| open_window(cx, &hop));
                 }
-                MenuCommand::SendAll => self.send_all(),
-                MenuCommand::SendOne(address) => self.send_one(&address),
-                MenuCommand::UseAll => self.use_here(),
                 MenuCommand::UseOne(address) => self.use_one(&address),
                 MenuCommand::Allow(id) => {
                     link::allow(&id);
@@ -207,36 +200,6 @@ impl Hop {
         changed
     }
 
-    fn send_all(&mut self) {
-        self.send_addresses(&self.connected_chosen());
-    }
-
-    fn send_one(&mut self, address: &str) {
-        let address = wire::canon(address);
-        let on_this_mac = self.devices.iter().any(|device| {
-            device.address == address
-                && self.choice.addresses.contains(&address)
-                && device.connected
-        });
-        if !on_this_mac {
-            return;
-        }
-        self.send_addresses(std::slice::from_ref(&address));
-    }
-
-    fn use_here(&mut self) {
-        if self.choice.addresses.is_empty() {
-            self.report(handoff::Outcome::Stayed(handoff::StayReason::NothingShared));
-            return;
-        }
-        let away = self.away();
-        if away.is_empty() {
-            self.report(handoff::Outcome::Stayed(handoff::StayReason::AlreadyHere));
-            return;
-        }
-        self.claim_addresses(&away);
-    }
-
     fn use_one(&mut self, address: &str) {
         let address = wire::canon(address);
         if !self.choice.addresses.contains(&address) {
@@ -250,51 +213,6 @@ impl Hop {
             return;
         }
         self.claim_addresses(std::slice::from_ref(&address));
-    }
-
-    fn away(&self) -> Vec<String> {
-        let here: HashSet<String> = self
-            .devices
-            .iter()
-            .filter(|device| device.connected)
-            .map(|device| device.address.clone())
-            .collect();
-        let mut away: Vec<_> = self
-            .choice
-            .addresses
-            .iter()
-            .filter(|address| !here.contains(*address))
-            .cloned()
-            .collect();
-        away.sort();
-        away
-    }
-
-    fn send_addresses(&mut self, targets: &[String]) {
-        if !matches!(self.phase, Phase::Idle) {
-            return;
-        }
-        self.notice = None;
-        if targets.is_empty() {
-            self.report(handoff::Outcome::Stayed(handoff::StayReason::NothingHere));
-            return;
-        }
-        let Some(target) = link::target() else {
-            let reason = match self.seen {
-                link::Seen::Nearby => handoff::StayReason::NeedsAllow,
-                link::Seen::Crowd => handoff::StayReason::Crowd,
-                _ => handoff::StayReason::PeerUnreachable,
-            };
-            self.report(handoff::Outcome::Stayed(reason));
-            return;
-        };
-        let addresses = targets.to_vec();
-        self.flight = Some(std::thread::spawn(move || {
-            link::handover(target, addresses)
-        }));
-        self.phase = Phase::Sending {
-            started: Instant::now(),
-        };
     }
 
     fn claim_addresses(&mut self, targets: &[String]) {
@@ -367,14 +285,6 @@ impl Hop {
         if self.window.is_none() {
             menu_bar::notify_stayed(&notice);
         }
-    }
-
-    fn connected_chosen(&self) -> Vec<String> {
-        self.devices
-            .iter()
-            .filter(|device| self.choice.addresses.contains(&device.address) && device.connected)
-            .map(|device| device.address.clone())
-            .collect()
     }
 
     fn chosen_count(&self) -> usize {
@@ -507,34 +417,66 @@ impl Hop {
         rows
     }
 
-    fn listed(&self) -> Vec<DeviceView> {
-        let mut rows = self.devices.clone();
-        let known: HashSet<_> = rows.iter().map(|device| device.address.clone()).collect();
-        let mut extra: Vec<_> = self
-            .choice
-            .addresses
+    fn shared_views(&self) -> Vec<DeviceView> {
+        let mut addresses: Vec<_> = self.choice.addresses.iter().cloned().collect();
+        addresses.sort();
+        addresses
+            .into_iter()
+            .map(|address| {
+                let local = self.devices.iter().find(|device| device.address == address);
+                let connected = local.is_some_and(|device| device.connected);
+                let name = local
+                    .map(|device| device.name.clone())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| self.choice.names.get(&address).cloned())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| "Shared device".to_string());
+                DeviceView {
+                    address,
+                    name,
+                    detail: if connected {
+                        "On this Mac".to_string()
+                    } else {
+                        "On the other Mac".to_string()
+                    },
+                    chosen: true,
+                    connected,
+                }
+            })
+            .collect()
+    }
+
+    fn unshared_here(&self) -> Vec<DeviceView> {
+        self.devices
             .iter()
-            .filter(|address| !known.contains(*address))
+            .filter(|device| device.connected && !self.choice.addresses.contains(&device.address))
             .cloned()
-            .collect();
-        extra.sort();
-        for address in extra {
-            let name = self
-                .choice
-                .names
-                .get(&address)
-                .cloned()
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| "Shared device".to_string());
-            rows.push(DeviceView {
-                address,
-                name,
-                detail: "Shared · On the other Mac".to_string(),
-                chosen: true,
-                connected: false,
-            });
+            .map(|mut device| {
+                device.chosen = false;
+                device.detail = "Share with the other Mac".to_string();
+                device
+            })
+            .collect()
+    }
+
+    fn on_device(&mut self, address: &str, cx: &mut Context<Self>) {
+        let address = wire::canon(address);
+        if address.is_empty() {
+            return;
         }
-        rows
+        let here = self
+            .devices
+            .iter()
+            .any(|device| device.address == address && device.connected);
+        let shared = self.choice.addresses.contains(&address);
+        if shared && !here {
+            self.use_one(&address);
+            return;
+        }
+        if !here {
+            return;
+        }
+        self.toggle(&address, cx);
     }
 
     fn toggle(&mut self, address: &str, cx: &mut Context<Self>) {
@@ -643,7 +585,8 @@ impl Render for Hop {
             .notice
             .clone()
             .unwrap_or_else(|| summary(chosen_count, peer, self.seen));
-        let listed = self.listed();
+        let shared = self.shared_views();
+        let mine = self.unshared_here();
         let list_error = self.list_error.clone();
         let mut list = div()
             .id("device-list")
@@ -655,17 +598,34 @@ impl Render for Hop {
             .overflow_y_scroll();
         if let Some(error) = list_error {
             list = list.child(note(error));
-        } else if listed.is_empty() {
-            list = list.child(note(
-                "No paired Bluetooth devices yet. Pair them in System Settings on both Macs.",
-            ));
         } else {
-            for device in &listed {
-                let address = device.address.clone();
-                list = list.child(device_row(
-                    device,
-                    cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle(&address, cx)),
+            list = list.child(section_label("Shared"));
+            if shared.is_empty() {
+                list = list.child(note(
+                    "Nothing shared yet. On the Mac that has a device, share it.",
                 ));
+            } else {
+                for device in &shared {
+                    let address = device.address.clone();
+                    list = list.child(device_row(
+                        device,
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.on_device(&address, cx)
+                        }),
+                    ));
+                }
+            }
+            if !mine.is_empty() {
+                list = list.child(section_label("On this Mac"));
+                for device in &mine {
+                    let address = device.address.clone();
+                    list = list.child(device_row(
+                        device,
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.on_device(&address, cx)
+                        }),
+                    ));
+                }
             }
         }
 
@@ -683,7 +643,7 @@ impl Render for Hop {
             .child(
                 div()
                     .text_size(px(15.0))
-                    .child("Check a device to share it. Either Mac can take it."),
+                    .child("The Mac that has a device shares it. Both Macs see that list."),
             )
             .child(
                 div()
@@ -692,37 +652,6 @@ impl Render for Hop {
                     .child("A mouse, a keyboard, headphones, or anything else already paired. Both Macs use the same Apple Account, the same network, and those same devices."),
             )
             .child(list)
-            .child(
-                div()
-                    .id("use-here")
-                    .h(px(44.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(10.0))
-                    .bg(rgb(INK))
-                    .text_color(rgb(PAPER))
-                    .font_weight(FontWeight::BOLD)
-                    .text_size(px(16.0))
-                    .cursor_pointer()
-                    .child("Use here")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, _cx| this.use_here())),
-            )
-            .child(
-                div()
-                    .id("send-devices")
-                    .h(px(44.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(10.0))
-                    .bg(rgb(CARD))
-                    .text_color(rgb(INK))
-                    .text_size(px(16.0))
-                    .cursor_pointer()
-                    .child("Send to the other Mac")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, _cx| this.send_all())),
-            )
             .child(
                 div()
                     .text_size(px(13.0))
@@ -734,7 +663,7 @@ impl Render for Hop {
 
 fn summary(chosen: usize, peer: handoff::Peer, seen: link::Seen) -> String {
     if seen == link::Seen::Nearby {
-        return "The other Mac is nearby. Allow it in the menu, on both Macs, before Send.".into();
+        return "The other Mac is nearby. Allow it in the menu, on both Macs.".into();
     }
     if seen == link::Seen::Crowd {
         return "More than one other Mac is running Hop.".into();
@@ -747,14 +676,21 @@ fn summary(chosen: usize, peer: handoff::Peer, seen: link::Seen) -> String {
             "{chosen} shared. The other Mac is not running Hop, so the devices stay where they are."
         ),
         (0, handoff::Peer::Ready) => {
-            "Nothing is shared. Check a device, then either Mac can take it.".into()
+            "Nothing is shared. On the Mac that has a device, share it.".into()
         }
         (count, handoff::Peer::Ready) => {
-            format!(
-                "{count} shared. Use here brings them to this Mac. Send moves the ones connected here."
-            )
+            format!("{count} shared. Click a device that is on the other Mac to use it here.")
         }
     }
+}
+
+fn section_label(text: &str) -> impl IntoElement {
+    div()
+        .pt(px(6.0))
+        .text_size(px(13.0))
+        .font_weight(FontWeight::BOLD)
+        .text_color(rgb(MUTED))
+        .child(text.to_string())
 }
 
 fn note(text: impl Into<String>) -> impl IntoElement {
