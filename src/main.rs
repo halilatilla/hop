@@ -121,6 +121,7 @@ struct Hop {
     status_label: String,
     ticks: u32,
     theme: Option<Subscription>,
+    prompted: HashSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,6 +154,7 @@ impl Hop {
             status_label: String::new(),
             ticks: 0,
             theme: None,
+            prompted: HashSet::new(),
         }
     }
 
@@ -197,12 +199,22 @@ impl Hop {
             if matches!(self.phase, Phase::Idle) {
                 self.notice = None;
             }
+            let mut fresh = false;
+            for allow in &allows {
+                if self.prompted.insert(allow.id.clone()) {
+                    fresh = true;
+                }
+            }
             self.seen = seen;
             self.allows = allows;
             self.peer = link::peer();
             self.publish_status();
             self.sync_menu();
             cx.notify();
+            if fresh {
+                let hop = cx.entity();
+                cx.defer(move |cx| open_window(cx, &hop));
+            }
         }
         if self.ticks.is_multiple_of(8) {
             self.refresh(cx);
@@ -376,6 +388,8 @@ impl Hop {
     fn publish_status(&mut self) {
         let label = if matches!(self.phase, Phase::Sending { .. }) {
             "…".to_string()
+        } else if matches!(self.seen, link::Seen::Nearby) {
+            "Allow".to_string()
         } else {
             handoff::status_label(self.chosen_count(), self.peer)
         };
@@ -400,7 +414,7 @@ impl Hop {
                     .first()
                     .map(|allow| allow.name.as_str())
                     .unwrap_or("the other Mac");
-                format!("Allow {name} in this menu. Then allow this Mac on that Mac.")
+                format!("Allow {name} on this Mac. Then allow this Mac on {name}.")
             }
             link::Seen::None => handoff::tooltip(handoff::Peer::Missing),
         }
@@ -721,7 +735,11 @@ impl Render for Hop {
             .overflow_y_scroll();
         if let Some(error) = list_error {
             list = list.child(note(error, colors));
-        } else {
+        } else if seen != link::Seen::Nearby
+            || allows.is_empty()
+            || !shared.is_empty()
+            || !mine.is_empty()
+        {
             list = list.child(section_label("Shared", colors));
             if shared.is_empty() {
                 list = list.child(note(
@@ -773,7 +791,7 @@ impl Render for Hop {
                 }));
             }
         } else {
-            column = column.child(peer_status(seen, colors));
+            column = column.child(peer_status(seen, shared.is_empty(), colors));
         }
         column = column.child(list);
         if let Some(notice) = notice {
@@ -885,7 +903,7 @@ fn place_line(kind: &str, place: &str) -> String {
     }
 }
 
-fn peer_status(seen: link::Seen, colors: Palette) -> impl IntoElement {
+fn peer_status(seen: link::Seen, first: bool, colors: Palette) -> impl IntoElement {
     let (filled, title, detail) = match seen {
         link::Seen::Ready => (true, link::other_mac(), "Ready"),
         link::Seen::Crowd => (
@@ -898,10 +916,15 @@ fn peer_status(seen: link::Seen, colors: Palette) -> impl IntoElement {
             "A Mac is nearby".to_string(),
             "Allow it here, then on that Mac",
         ),
+        link::Seen::None if first => (
+            false,
+            "No other Mac".to_string(),
+            "Open Hop on the other Mac. Both need this network.",
+        ),
         link::Seen::None => (
             false,
             "No other Mac".to_string(),
-            "Devices stay where they are",
+            "Open Hop on the other Mac. Devices stay where they are.",
         ),
     };
     div()
@@ -933,36 +956,29 @@ fn allow_card(
 ) -> impl IntoElement {
     div()
         .flex()
-        .flex_row()
-        .items_center()
+        .flex_col()
         .gap(px(10.0))
-        .px(px(12.0))
-        .py(px(10.0))
+        .px(px(14.0))
+        .py(px(14.0))
         .rounded(px(10.0))
         .bg(rgb(colors.card))
-        .child(presence_mark(false, colors.card, colors))
+        .child(div().text_size(px(17.0)).child(name.to_string()))
         .child(
             div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .gap(px(1.0))
-                .child(div().text_size(px(15.0)).child(name.to_string()))
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .text_color(rgb(colors.muted))
-                        .child("Allow it here, then on that Mac"),
-                ),
+                .text_size(px(13.0))
+                .text_color(rgb(colors.muted))
+                .child(format!(
+                    "Allow {name} on this Mac. Then, on {name}, allow this Mac."
+                )),
         )
-        .child(action_button(
+        .child(div().flex().flex_row().justify_end().child(action_button(
             format!("allow-{id}"),
             "Allow",
             true,
             true,
             colors,
             on_allow,
-        ))
+        )))
 }
 
 fn section_label(text: &str, colors: Palette) -> impl IntoElement {

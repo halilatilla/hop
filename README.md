@@ -10,7 +10,7 @@ Hop runs in the menu bar. On a Mac the window stays closed until you choose **De
 
 A Bluetooth device such as a Magic Mouse or a pair of headphones connects to one Mac at a time, and it can remember more than one. Pair each device in System Settings → Bluetooth on both Macs once. After that, Hop does not ask you to pair again.
 
-Both Macs run Hop. Each one announces itself on the local network. The first time the other Mac appears, choose **Allow** in the menu, on both Macs. After that, Hop remembers the other Mac.
+Both Macs run Hop. Each one announces itself on the local network. The first time the other Mac appears, the menu bar reads **Allow** and the window opens. Choose **Allow** on this Mac, then on that Mac. After that, Hop remembers the other Mac.
 
 On the Mac that has a device, open **Devices…** and choose **Share**. Both Macs then show the same list. A filled mark, and a checkmark in the menu, means this Mac is using it. The Mac’s name sits under the device. **Connected** is a green status, and the outlined **Remove** beside it takes the device off the shared list and leaves it connected here. **Connect** is the filled button when the other Mac is using it. The top of the window names the other Mac when it is ready. The first time that Mac appears, **Allow** is in the window as well as the menu.
 
@@ -27,7 +27,7 @@ The window lists the shared devices, then any device connected on this Mac that 
 
 Hop writes a temporary file and renames it into place. A file that does not parse is an error, and Hop starts with nothing chosen. If `choice.json` is missing and an older `chosen.txt` is there, Hop reads that list.
 
-The menu is **About Hop**, the other Mac’s name when it is ready, **Allow** when that Mac is new, **Devices…**, the shared devices, and **Quit Hop**. A checkmark is a device on this Mac. Choosing a device without a checkmark connects it here. Closing the window leaves Hop running. The menu bar leaves `no Mac` once the other Mac has been allowed and answers.
+The menu is **About Hop**, the other Mac’s name when it is ready, **Allow** when that Mac is new, **Devices…**, the shared devices, and **Quit Hop**. A checkmark is a device on this Mac. Choosing a device without a checkmark connects it here. Closing the window leaves Hop running. The menu bar reads **Allow** while that Mac is waiting, and leaves `no Mac` once it has been allowed and answers.
 
 macOS asks for Bluetooth access so Hop can read the paired devices. Local Network access comes when the two Macs link.
 
