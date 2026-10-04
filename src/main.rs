@@ -435,9 +435,9 @@ impl Hop {
                     address,
                     name,
                     detail: if connected {
-                        "On this Mac".to_string()
+                        link::this_mac()
                     } else {
-                        "On the other Mac".to_string()
+                        link::other_mac()
                     },
                     chosen: true,
                     connected,
@@ -453,7 +453,7 @@ impl Hop {
             .cloned()
             .map(|mut device| {
                 device.chosen = false;
-                device.detail = "Share with the other Mac".to_string();
+                device.detail = link::this_mac();
                 device
             })
             .collect()
@@ -473,10 +473,9 @@ impl Hop {
             self.use_one(&address);
             return;
         }
-        if !here {
-            return;
+        if here && !shared {
+            self.toggle(&address, cx);
         }
-        self.toggle(&address, cx);
     }
 
     fn toggle(&mut self, address: &str, cx: &mut Context<Self>) {
@@ -607,24 +606,25 @@ impl Render for Hop {
             } else {
                 for device in &shared {
                     let address = device.address.clone();
-                    list = list.child(device_row(
-                        device,
-                        cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.on_device(&address, cx)
-                        }),
-                    ));
+                    let label = if device.connected {
+                        "Connected"
+                    } else {
+                        "Connect"
+                    };
+                    list = list.child(device_row(device, label, {
+                        let address = address.clone();
+                        cx.listener(move |this, _: &ClickEvent, _, cx| this.on_device(&address, cx))
+                    }));
                 }
             }
             if !mine.is_empty() {
                 list = list.child(section_label("On this Mac"));
                 for device in &mine {
                     let address = device.address.clone();
-                    list = list.child(device_row(
-                        device,
-                        cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.on_device(&address, cx)
-                        }),
-                    ));
+                    list = list.child(device_row(device, "Share", {
+                        let address = address.clone();
+                        cx.listener(move |this, _: &ClickEvent, _, cx| this.on_device(&address, cx))
+                    }));
                 }
             }
         }
@@ -643,7 +643,7 @@ impl Render for Hop {
             .child(
                 div()
                     .text_size(px(15.0))
-                    .child("The Mac that has a device shares it. Both Macs see that list."),
+                    .child("Both Macs show this list. Connected is the Mac using it."),
             )
             .child(
                 div()
@@ -679,7 +679,7 @@ fn summary(chosen: usize, peer: handoff::Peer, seen: link::Seen) -> String {
             "Nothing is shared. On the Mac that has a device, share it.".into()
         }
         (count, handoff::Peer::Ready) => {
-            format!("{count} shared. Click a device that is on the other Mac to use it here.")
+            format!("{count} shared. Connect takes a device the other Mac is using.")
         }
     }
 }
@@ -702,22 +702,16 @@ fn note(text: impl Into<String>) -> impl IntoElement {
 
 fn device_row(
     device: &DeviceView,
+    action: &str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
-    let (name_color, detail_color, row_bg) = if device.chosen {
-        (rgb(PAPER), rgb(MUTED_ON_INK), rgb(INK))
+    let live = action != "Connected";
+    let (button_bg, button_ink) = if action == "Connect" {
+        (rgb(INK), rgb(PAPER))
+    } else if action == "Share" {
+        (rgb(AMBER), rgb(AMBER_INK))
     } else {
-        (rgb(INK), rgb(MUTED), rgb(CARD))
-    };
-    let mark_bg = if device.chosen {
-        rgb(AMBER)
-    } else {
-        rgb(0xe7e0d6)
-    };
-    let mark_ink = if device.chosen {
-        rgb(AMBER_INK)
-    } else {
-        rgb(MUTED)
+        (rgb(0xe7e0d6), rgb(MUTED))
     };
     div()
         .id(format!("device-{}", device.address))
@@ -728,39 +722,44 @@ fn device_row(
         .px(px(12.0))
         .py(px(10.0))
         .rounded(px(10.0))
-        .bg(row_bg)
-        .cursor_pointer()
-        .on_click(on_click)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(22.0))
-                .h(px(22.0))
-                .rounded(px(6.0))
-                .bg(mark_bg)
-                .text_color(mark_ink)
-                .text_size(px(13.0))
-                .font_weight(FontWeight::BOLD)
-                .child(if device.chosen { "✓" } else { "" }),
-        )
+        .bg(rgb(CARD))
         .child(
             div()
                 .flex()
                 .flex_col()
+                .flex_1()
                 .gap(px(2.0))
                 .child(
                     div()
                         .text_size(px(15.0))
-                        .text_color(name_color)
+                        .text_color(rgb(INK))
                         .child(device.name.clone()),
                 )
                 .child(
                     div()
                         .text_size(px(13.0))
-                        .text_color(detail_color)
+                        .text_color(rgb(MUTED))
                         .child(device.detail.clone()),
                 ),
         )
+        .child({
+            let button = div()
+                .id(format!("act-{}", device.address))
+                .h(px(32.0))
+                .px(px(12.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(8.0))
+                .bg(button_bg)
+                .text_color(button_ink)
+                .text_size(px(13.0))
+                .font_weight(FontWeight::BOLD)
+                .child(action.to_string());
+            if live {
+                button.cursor_pointer().on_click(on_click)
+            } else {
+                button
+            }
+        })
 }

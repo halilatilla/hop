@@ -357,15 +357,12 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
             let _: () = msg_send![heading, setEnabled: false];
         }
         for (index, device) in devices.iter().enumerate() {
-            let item = add_item(menu, target, &device.name, "", DEVICE_TAG + index as isize);
-            let state: isize = if device.connected { 1 } else { 0 };
-            let _: () = msg_send![item, setState: state];
-            let place = if device.connected {
-                "On this Mac"
+            let title = if device.connected {
+                format!("Connected  {}", device.name)
             } else {
-                "On the other Mac"
+                format!("Connect  {}", device.name)
             };
-            let _: () = msg_send![item, setToolTip: ns_string(place)];
+            let item = add_item(menu, target, &title, "", DEVICE_TAG + index as isize);
             if device.connected {
                 let _: () = msg_send![item, setEnabled: false];
             }

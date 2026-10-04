@@ -197,7 +197,7 @@ pub fn tooltip(peer: Peer) -> String {
             "The other Mac is not running Hop. Shared devices stay where they are.".to_string()
         }
         Peer::Ready => {
-            "The shared list is on both Macs. Click a device the other Mac has.".to_string()
+            "Connected is this Mac. Connect takes a device the other Mac is using.".to_string()
         }
     }
 }
@@ -315,7 +315,7 @@ mod tests {
         );
         assert_eq!(
             tooltip(Peer::Ready),
-            "The shared list is on both Macs. Click a device the other Mac has."
+            "Connected is this Mac. Connect takes a device the other Mac is using."
         );
     }
 }

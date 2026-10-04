@@ -137,6 +137,52 @@ pub fn seen() -> Seen {
     }
 }
 
+pub fn this_mac() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        computer_name()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "This Mac".to_string()
+    }
+}
+
+pub fn other_mac() -> String {
+    let Some(world) = world() else {
+        return "The other Mac".to_string();
+    };
+    let Ok(world) = world.lock() else {
+        return "The other Mac".to_string();
+    };
+    let self_key = world.identity.public_key();
+    let mut found = None;
+    for sight in &world.sights {
+        let Some(key) = sight.key else {
+            continue;
+        };
+        if !sight.resolved || key == self_key || !world.allowed.contains_key(&key) {
+            continue;
+        }
+        if found.is_some() {
+            return "The other Mac".to_string();
+        }
+        let name = if sight.instance.is_empty() {
+            world
+                .allowed
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| "The other Mac".to_string())
+        } else {
+            sight.instance.clone()
+        };
+        found = Some(name);
+    }
+    found
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "The other Mac".to_string())
+}
+
 pub fn peer() -> Peer {
     if seen() == Seen::Ready {
         Peer::Ready

@@ -12,7 +12,7 @@ A Bluetooth device such as a Magic Mouse or a pair of headphones connects to one
 
 Both Macs run Hop. Each one announces itself on the local network. The first time the other Mac appears, choose **Allow** in the menu, on both Macs. After that, Hop remembers the other Mac.
 
-On the Mac that has a device, open **Devices…** and share it. That device joins the shared list, and the other Mac sees the same list. Click the row that says **On the other Mac** and this Mac connects it.
+On the Mac that has a device, open **Devices…** and choose **Share**. Both Macs then show the same list. **Connected** means this Mac is using it, with that Mac’s name under the device. **Connect** means the other Mac is using it, and choosing it connects the device here.
 
 That click asks before anything disconnects. The Mac that has the device drops it from Bluetooth, then this Mac connects it. If this Mac does not have it paired yet, it pairs it. If the other Mac does not answer or has not allowed this Mac, nothing is dropped. If the device does leave and this Mac does not connect it, Hop connects it again on the Mac that had it. While the window is closed, that failure is one notification, replaced if you try again.
 
@@ -27,7 +27,7 @@ The window lists every device paired in Bluetooth. Tap one to include it. The ch
 
 Hop writes a temporary file and renames it into place. A file that does not parse is an error, and Hop starts with nothing chosen. If `choice.json` is missing and an older `chosen.txt` is there, Hop reads that list.
 
-The menu is **About Hop**, **Allow** when the other Mac is new, **Devices…**, the shared devices, and **Quit Hop**. A shared device with a check is on this Mac. One without a check is on the other Mac, and choosing it connects that device here. Closing the window leaves Hop running. The menu bar leaves `no Mac` once the other Mac has been allowed and answers.
+The menu is **About Hop**, **Allow** when the other Mac is new, **Devices…**, the shared devices, and **Quit Hop**. A shared device reads **Connected** on the Mac using it, and **Connect** on the other Mac. Choosing **Connect** connects that device here. Closing the window leaves Hop running. The menu bar leaves `no Mac` once the other Mac has been allowed and answers.
 
 macOS asks for Bluetooth access so Hop can read the paired devices. Local Network access comes when the two Macs link.
 
