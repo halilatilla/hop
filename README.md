@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/menu.png" width="315" alt="The Hop menu, with a shared keyboard and mouse">
+  <img src="docs/menu-bar.png" width="269" alt="The Hop menu, with a shared keyboard and mouse">
 </p>
 
 Hop sits in the menu bar. Your devices stay paired to both Macs. Hop only moves which Mac they are connected to.
