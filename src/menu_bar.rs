@@ -17,6 +17,7 @@ pub struct MenuDevice {
     pub address: String,
     pub name: String,
     pub connected: bool,
+    pub busy: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,13 +62,14 @@ pub fn set_tooltip(text: &str) {
     let _ = text;
 }
 
-pub fn set_devices(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
+pub fn set_devices(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>, peer_line: &str) {
     #[cfg(target_os = "macos")]
-    set_devices_mac(devices, allows);
+    set_devices_mac(devices, allows, peer_line);
     #[cfg(not(target_os = "macos"))]
     {
         let _ = devices;
         let _ = allows;
+        let _ = peer_line;
     }
 }
 
@@ -328,7 +330,7 @@ fn add_item(
 }
 
 #[cfg(target_os = "macos")]
-fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
+fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>, peer_line: &str) {
     use objc::runtime::Object;
     use objc::{msg_send, sel, sel_impl};
 
@@ -350,6 +352,10 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
         let _: () = msg_send![menu, removeAllItems];
         add_item(menu, target, "About Hop", "", ABOUT);
         add_separator(menu);
+        if !peer_line.is_empty() {
+            let peer = add_item(menu, target, peer_line, "", 0);
+            let _: () = msg_send![peer, setEnabled: false];
+        }
         for (index, allow) in allows.iter().enumerate() {
             add_item(
                 menu,
@@ -368,19 +374,24 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
             let heading = add_item(menu, target, "Shared", "", 0);
             let _: () = msg_send![heading, setEnabled: false];
         }
+        let moving = devices.iter().any(|device| device.busy);
         for (index, device) in devices.iter().enumerate() {
-            let title = if device.connected {
-                format!("Connected  {}", device.name)
+            let title = if device.busy {
+                format!("Connecting {}", device.name)
             } else {
-                format!("Connect  {}", device.name)
+                device.name.clone()
             };
             let item = add_item(menu, target, &title, "", DEVICE_TAG + index as isize);
-            if device.connected {
+            if device.busy || (moving && !device.connected) {
+                let _: () = msg_send![item, setEnabled: false];
+            } else if device.connected {
+                // NSControlStateValueOn
+                let _: () = msg_send![item, setState: 1isize];
                 let _: () = msg_send![item, setEnabled: false];
                 add_item(
                     menu,
                     target,
-                    &format!("Remove  {}", device.name),
+                    &format!("Remove {}", device.name),
                     "",
                     REMOVE_TAG + index as isize,
                 );

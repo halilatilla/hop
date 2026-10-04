@@ -116,14 +116,12 @@ pub fn after_release(reply: Option<&str>) -> ReleaseResult {
 
 pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
     match reason {
-        StayReason::NothingHere => {
-            Some("Nothing connected here is chosen. Check the device in the menu, then send it.")
-        }
+        StayReason::NothingHere => Some("That device is not connected on this Mac."),
         StayReason::PeerUnreachable => {
             Some("The other Mac is not running Hop. Devices stayed on this Mac.")
         }
         StayReason::NeedsAllow => {
-            Some("Allow the other Mac in the menu, on both Macs. Devices stayed on this Mac.")
+            Some("Allow the other Mac, on both Macs. Devices stayed on this Mac.")
         }
         StayReason::Crowd => {
             Some("More than one other Mac is running Hop. Devices stayed on this Mac.")
@@ -197,7 +195,7 @@ pub fn tooltip(peer: Peer) -> String {
             "The other Mac is not running Hop. Shared devices stay where they are.".to_string()
         }
         Peer::Ready => {
-            "Connected is this Mac. Connect takes a device the other Mac is using.".to_string()
+            "A checkmark is on this Mac. Choose a device to connect it here.".to_string()
         }
     }
 }
@@ -315,7 +313,7 @@ mod tests {
         );
         assert_eq!(
             tooltip(Peer::Ready),
-            "Connected is this Mac. Connect takes a device the other Mac is using."
+            "A checkmark is on this Mac. Choose a device to connect it here."
         );
     }
 }
