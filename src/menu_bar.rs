@@ -17,6 +17,7 @@ pub enum MenuCommand {
 pub struct MenuDevice {
     pub address: String,
     pub name: String,
+    pub kind: String,
     pub connected: bool,
     pub busy: bool,
 }
@@ -323,6 +324,72 @@ fn add_separator(menu: *mut objc::runtime::Object) {
 }
 
 #[cfg(target_os = "macos")]
+fn add_heading(menu: *mut objc::runtime::Object, title: &str) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let kind = class!(NSMenuItem);
+        let header = sel!(sectionHeaderWithTitle:);
+        let available: bool = msg_send![kind, respondsToSelector: header];
+        let item: *mut Object = if available {
+            msg_send![kind, sectionHeaderWithTitle: ns_string(title)]
+        } else {
+            let item: *mut Object = msg_send![kind, alloc];
+            let item: *mut Object = msg_send![item, init];
+            let _: () = msg_send![item, setTitle: ns_string(title)];
+            let _: () = msg_send![item, setEnabled: false];
+            item
+        };
+        let _: () = msg_send![menu, addItem: item];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn add_peer(menu: *mut objc::runtime::Object, title: &str) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
+        let item: *mut Object = msg_send![item, init];
+        let _: () = msg_send![item, setTitle: ns_string(title)];
+        set_symbol(item, "laptopcomputer");
+        let _: () = msg_send![item, setEnabled: false];
+        let _: () = msg_send![menu, addItem: item];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_symbol(item: *mut objc::runtime::Object, name: &str) {
+    use objc::runtime::{Object, YES};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let image: *mut Object = msg_send![class!(NSImage), imageWithSystemSymbolName: ns_string(name) accessibilityDescription: std::ptr::null::<Object>()];
+        if image.is_null() {
+            return;
+        }
+        let _: () = msg_send![image, setTemplate: YES];
+        let _: () = msg_send![item, setImage: image];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn symbol_name(kind: &str) -> &'static str {
+    match kind {
+        "Keyboard" | "Keyboard and mouse" => "keyboard",
+        "Mouse" | "Pen" | "Tablet" => "computermouse",
+        "Audio" => "headphones",
+        "Phone" => "iphone",
+        "Computer" => "laptopcomputer",
+        "Camera or printer" => "printer",
+        "Joystick" | "Gamepad" | "Remote" => "gamecontroller",
+        _ => "dot.radiowaves.left.and.right",
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn add_item(
     menu: *mut objc::runtime::Object,
     target: *mut objc::runtime::Object,
@@ -376,20 +443,21 @@ fn set_devices_mac(
     }
     unsafe {
         let _: () = msg_send![menu, removeAllItems];
-        add_item(menu, target, "About Hop", "", ABOUT);
-        add_separator(menu);
+        if !peer_line.is_empty() || !allows.is_empty() {
+            add_heading(menu, "Other Mac");
+        }
         if !peer_line.is_empty() {
-            let peer = add_item(menu, target, peer_line, "", 0);
-            let _: () = msg_send![peer, setEnabled: false];
+            add_peer(menu, peer_line);
         }
         for (index, allow) in allows.iter().enumerate() {
-            add_item(
+            let item = add_item(
                 menu,
                 target,
                 &format!("{}  Codes match · {}", allow.code, allow.name),
                 "",
                 ALLOW_TAG + index as isize,
             );
+            set_symbol(item, "laptopcomputer");
         }
         if (!peer_line.is_empty() || !allows.is_empty())
             && (!local.is_empty() || !devices.is_empty())
@@ -397,24 +465,23 @@ fn set_devices_mac(
             add_separator(menu);
         }
         if !local.is_empty() {
-            let heading = add_item(menu, target, "On this Mac", "", 0);
-            let _: () = msg_send![heading, setEnabled: false];
+            add_heading(menu, "On this Mac");
             for (index, device) in local.iter().enumerate() {
-                add_item(
+                let item = add_item(
                     menu,
                     target,
                     &format!("Share {}", device.name),
                     "",
                     SHARE_TAG + index as isize,
                 );
+                set_symbol(item, symbol_name(&device.kind));
             }
             if !devices.is_empty() {
                 add_separator(menu);
             }
         }
         if !devices.is_empty() {
-            let heading = add_item(menu, target, "Shared", "", 0);
-            let _: () = msg_send![heading, setEnabled: false];
+            add_heading(menu, "Shared");
         }
         let moving = devices.iter().any(|device| device.busy);
         for (index, device) in devices.iter().enumerate() {
@@ -426,6 +493,7 @@ fn set_devices_mac(
                 format!("Connect {}", device.name)
             };
             let item = add_item(menu, target, &title, "", DEVICE_TAG + index as isize);
+            set_symbol(item, symbol_name(&device.kind));
             if device.busy || (moving && !device.connected) {
                 let _: () = msg_send![item, setEnabled: false];
             } else if device.connected {
@@ -437,6 +505,7 @@ fn set_devices_mac(
             }
         }
         add_separator(menu);
+        add_item(menu, target, "About Hop", "", ABOUT);
         add_item(menu, target, "Quit Hop", "q", QUIT);
     }
 }

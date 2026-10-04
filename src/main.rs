@@ -471,6 +471,7 @@ impl Hop {
             .map(|device| menu_bar::MenuDevice {
                 address: device.address.clone(),
                 name: device.name.clone(),
+                kind: device.kind.clone(),
                 connected: true,
                 busy: false,
             })
@@ -481,7 +482,7 @@ impl Hop {
         match self.seen {
             link::Seen::Ready => link::other_mac(),
             link::Seen::Crowd => "More than one Mac".to_string(),
-            link::Seen::None => "Other Mac is not running Hop".to_string(),
+            link::Seen::None => "Not running Hop".to_string(),
             link::Seen::Nearby => String::new(),
         }
     }
@@ -498,6 +499,7 @@ impl Hop {
             rows.push(menu_bar::MenuDevice {
                 address: device.address.clone(),
                 name: device.name.clone(),
+                kind: device.kind.clone(),
                 connected: device.connected,
                 busy: moving.iter().any(|address| address == &device.address),
             });
@@ -521,6 +523,7 @@ impl Hop {
             rows.push(menu_bar::MenuDevice {
                 address: address.clone(),
                 name,
+                kind: String::new(),
                 connected: false,
                 busy: moving.iter().any(|moving| moving == &address),
             });
