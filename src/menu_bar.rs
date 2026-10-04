@@ -7,6 +7,7 @@ use std::sync::Mutex;
 pub enum MenuCommand {
     Open,
     UseOne(String),
+    Share(String),
     Remove(String),
     Allow(String),
     Quit,
@@ -33,6 +34,7 @@ const ABOUT: isize = 4;
 const DEVICE_TAG: isize = 100;
 const ALLOW_TAG: isize = 1000;
 const REMOVE_TAG: isize = 2000;
+const SHARE_TAG: isize = 3000;
 
 static PENDING: Mutex<Vec<MenuCommand>> = Mutex::new(Vec::new());
 static ALLOWS: Mutex<Vec<MenuAllow>> = Mutex::new(Vec::new());
@@ -63,12 +65,18 @@ pub fn set_tooltip(text: &str) {
     let _ = text;
 }
 
-pub fn set_devices(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>, peer_line: &str) {
+pub fn set_devices(
+    devices: Vec<MenuDevice>,
+    local: Vec<MenuDevice>,
+    allows: Vec<MenuAllow>,
+    peer_line: &str,
+) {
     #[cfg(target_os = "macos")]
-    set_devices_mac(devices, allows, peer_line);
+    set_devices_mac(devices, local, allows, peer_line);
     #[cfg(not(target_os = "macos"))]
     {
         let _ = devices;
+        let _ = local;
         let _ = allows;
         let _ = peer_line;
     }
@@ -171,6 +179,16 @@ fn install_mac() {
                 };
                 MenuCommand::Remove(device.address.clone())
             }
+            tag if (SHARE_TAG..SHARE_TAG + 800).contains(&tag) => {
+                let index = (tag - SHARE_TAG) as usize;
+                let Ok(rows) = LOCAL.lock() else {
+                    return;
+                };
+                let Some(device) = rows.get(index) else {
+                    return;
+                };
+                MenuCommand::Share(device.address.clone())
+            }
             tag if (ALLOW_TAG..REMOVE_TAG).contains(&tag) => {
                 let index = (tag - ALLOW_TAG) as usize;
                 let Ok(allows) = ALLOWS.lock() else {
@@ -193,8 +211,6 @@ fn install_mac() {
             let menu: *mut Object = msg_send![class!(NSMenu), new];
             add_item(menu, target, "About Hop", "", ABOUT);
             add_separator(menu);
-            add_item(menu, target, "Devices…", ",", OPEN);
-            add_separator(menu);
             add_item(menu, target, "Quit Hop", "q", QUIT);
             menu
         }
@@ -208,8 +224,6 @@ fn install_mac() {
             let submenu: *mut Object = msg_send![class!(NSMenu), new];
             let _: () = msg_send![submenu, setTitle: ns_string("Hop")];
             add_item(submenu, target, "About Hop", "", ABOUT);
-            add_separator(submenu);
-            add_item(submenu, target, "Devices…", ",", OPEN);
             add_separator(submenu);
             add_item(submenu, target, "Quit Hop", "q", QUIT);
             let _: () = msg_send![app_item, setSubmenu: submenu];
@@ -236,6 +250,9 @@ static STATUS: Mutex<StatusSlot> = Mutex::new(StatusSlot {
 
 #[cfg(target_os = "macos")]
 static ROWS: Mutex<Vec<MenuDevice>> = Mutex::new(Vec::new());
+
+#[cfg(target_os = "macos")]
+static LOCAL: Mutex<Vec<MenuDevice>> = Mutex::new(Vec::new());
 
 #[cfg(target_os = "macos")]
 fn steady_menu_font(button: *mut objc::runtime::Object) {
@@ -331,7 +348,12 @@ fn add_item(
 }
 
 #[cfg(target_os = "macos")]
-fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>, peer_line: &str) {
+fn set_devices_mac(
+    devices: Vec<MenuDevice>,
+    local: Vec<MenuDevice>,
+    allows: Vec<MenuAllow>,
+    peer_line: &str,
+) {
     use objc::runtime::Object;
     use objc::{msg_send, sel, sel_impl};
 
@@ -340,6 +362,9 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>, peer_line: 
     }
     if let Ok(mut saved) = ALLOWS.lock() {
         *saved = allows.clone();
+    }
+    if let Ok(mut saved) = LOCAL.lock() {
+        *saved = local.clone();
     }
     let Ok(slot) = STATUS.lock() else {
         return;
@@ -361,16 +386,32 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>, peer_line: 
             add_item(
                 menu,
                 target,
-                &format!("{}  {}", allow.code, allow.name),
+                &format!("{}  Codes match · {}", allow.code, allow.name),
                 "",
                 ALLOW_TAG + index as isize,
             );
         }
-        if !allows.is_empty() {
+        if (!peer_line.is_empty() || !allows.is_empty())
+            && (!local.is_empty() || !devices.is_empty())
+        {
             add_separator(menu);
         }
-        add_item(menu, target, "Devices…", ",", OPEN);
-        add_separator(menu);
+        if !local.is_empty() {
+            let heading = add_item(menu, target, "On this Mac", "", 0);
+            let _: () = msg_send![heading, setEnabled: false];
+            for (index, device) in local.iter().enumerate() {
+                add_item(
+                    menu,
+                    target,
+                    &format!("Share {}", device.name),
+                    "",
+                    SHARE_TAG + index as isize,
+                );
+            }
+            if !devices.is_empty() {
+                add_separator(menu);
+            }
+        }
         if !devices.is_empty() {
             let heading = add_item(menu, target, "Shared", "", 0);
             let _: () = msg_send![heading, setEnabled: false];
@@ -379,8 +420,10 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>, peer_line: 
         for (index, device) in devices.iter().enumerate() {
             let title = if device.busy {
                 format!("Connecting {}", device.name)
-            } else {
+            } else if device.connected {
                 device.name.clone()
+            } else {
+                format!("Connect {}", device.name)
             };
             let item = add_item(menu, target, &title, "", DEVICE_TAG + index as isize);
             if device.busy || (moving && !device.connected) {

@@ -121,7 +121,6 @@ struct Hop {
     status_label: String,
     ticks: u32,
     theme: Option<Subscription>,
-    prompted: HashSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,7 +153,6 @@ impl Hop {
             status_label: String::new(),
             ticks: 0,
             theme: None,
-            prompted: HashSet::new(),
         }
     }
 
@@ -199,22 +197,12 @@ impl Hop {
             if matches!(self.phase, Phase::Idle) {
                 self.notice = None;
             }
-            let mut fresh = false;
-            for allow in &allows {
-                if self.prompted.insert(allow.id.clone()) {
-                    fresh = true;
-                }
-            }
             self.seen = seen;
             self.allows = allows;
             self.peer = link::peer();
             self.publish_status();
             self.sync_menu();
             cx.notify();
-            if fresh {
-                let hop = cx.entity();
-                cx.defer(move |cx| open_window(cx, &hop));
-            }
         }
         if self.ticks.is_multiple_of(8) {
             self.refresh(cx);
@@ -227,6 +215,7 @@ impl Hop {
                     cx.defer(move |cx| open_window(cx, &hop));
                 }
                 MenuCommand::UseOne(address) => self.use_one(&address, cx),
+                MenuCommand::Share(address) => self.toggle(&address, cx),
                 MenuCommand::Remove(address) => self.unshare(&address, cx),
                 MenuCommand::Allow(id) => {
                     link::allow(&id);
@@ -381,17 +370,13 @@ impl Hop {
         }
     }
 
-    fn chosen_count(&self) -> usize {
-        self.choice.addresses.len()
-    }
-
     fn publish_status(&mut self) {
         let label = if matches!(self.phase, Phase::Sending { .. }) {
             "…".to_string()
         } else if matches!(self.seen, link::Seen::Nearby) {
             "Allow".to_string()
         } else {
-            handoff::status_label(self.chosen_count(), self.peer)
+            String::new()
         };
         menu_bar::set_tooltip(&self.status_tooltip());
         if self.status_label == label {
@@ -476,14 +461,28 @@ impl Hop {
                 code: allow.code.clone(),
             })
             .collect();
-        menu_bar::set_devices(rows, allows, &self.menu_peer_line());
+        menu_bar::set_devices(rows, self.menu_local(), allows, &self.menu_peer_line());
+    }
+
+    fn menu_local(&self) -> Vec<menu_bar::MenuDevice> {
+        self.devices
+            .iter()
+            .filter(|device| device.connected && !self.choice.addresses.contains(&device.address))
+            .map(|device| menu_bar::MenuDevice {
+                address: device.address.clone(),
+                name: device.name.clone(),
+                connected: true,
+                busy: false,
+            })
+            .collect()
     }
 
     fn menu_peer_line(&self) -> String {
         match self.seen {
             link::Seen::Ready => link::other_mac(),
             link::Seen::Crowd => "More than one Mac".to_string(),
-            link::Seen::Nearby | link::Seen::None => String::new(),
+            link::Seen::None => "Other Mac is not running Hop".to_string(),
+            link::Seen::Nearby => String::new(),
         }
     }
 

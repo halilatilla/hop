@@ -180,15 +180,6 @@ pub fn execute(ops: &[BluetoothOp]) -> bool {
     ops.is_empty()
 }
 
-pub fn status_label(chosen: usize, peer: Peer) -> String {
-    match peer {
-        Peer::Missing if chosen == 0 => "no Mac".to_string(),
-        Peer::Missing => format!("{chosen} · no Mac"),
-        Peer::Ready if chosen == 0 => "Hop".to_string(),
-        Peer::Ready => chosen.to_string(),
-    }
-}
-
 pub fn tooltip(peer: Peer) -> String {
     match peer {
         Peer::Missing => {
@@ -205,7 +196,7 @@ mod tests {
     use super::{
         AskResult, BluetoothOp, DropResult, Outcome, Peer, PeerReply, Preflight, ReleaseResult,
         StayReason, WantResult, after_ask, after_drop, after_release, after_want, execute, run,
-        status_label, tooltip,
+        tooltip,
     };
 
     fn mouse() -> Vec<String> {
@@ -302,11 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_bar_shows_the_peer_and_the_count() {
-        assert_eq!(status_label(0, Peer::Missing), "no Mac");
-        assert_eq!(status_label(2, Peer::Missing), "2 · no Mac");
-        assert_eq!(status_label(0, Peer::Ready), "Hop");
-        assert_eq!(status_label(1, Peer::Ready), "1");
+    fn the_tooltip_says_where_the_other_mac_is() {
         assert_eq!(
             tooltip(Peer::Missing),
             "The other Mac is not running Hop. Shared devices stay where they are."
