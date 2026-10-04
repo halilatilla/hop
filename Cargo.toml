@@ -1,0 +1,18 @@
+[package]
+name = "hop"
+version = "0.1.0"
+edition = "2024"
+description = "Send chosen Bluetooth devices between two Macs"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+# Same GPUI pin as Stand. The platform crate is not on crates.io.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "06afd454ec3f23b7c97ce7527e9be9e1478564a4" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "06afd454ec3f23b7c97ce7527e9be9e1478564a4", features = [
+    "font-kit",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2.7"
+raw-window-handle = "0.6"
