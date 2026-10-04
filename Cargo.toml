@@ -1,6 +1,6 @@
 [package]
 name = "hop"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Send chosen Bluetooth devices between two Macs"
 license = "Apache-2.0"
@@ -23,4 +23,5 @@ strip = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2.7"
+block = "0.1.6"
 raw-window-handle = "0.6"

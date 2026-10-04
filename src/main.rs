@@ -43,20 +43,7 @@ fn main() {
 
 enum Phase {
     Idle,
-    Asking {
-        target: link::Target,
-        addresses: Vec<String>,
-        started: Instant,
-    },
-    Dropping {
-        target: link::Target,
-        addresses: Vec<String>,
-        started: Instant,
-    },
-    Releasing {
-        addresses: Vec<String>,
-        started: Instant,
-    },
+    Sending { started: Instant },
 }
 
 struct Hop {
@@ -70,7 +57,7 @@ struct Hop {
     allows: Vec<link::Nearby>,
     notice: Option<String>,
     phase: Phase,
-    flight: Option<JoinHandle<Result<wire::Body, String>>>,
+    flight: Option<JoinHandle<handoff::Outcome>>,
     status_label: String,
     ticks: u32,
 }
@@ -133,7 +120,6 @@ impl Hop {
                 .map(|device| device.address.clone())
                 .collect(),
         );
-        link::drive_bluetooth();
         self.drive_send();
         let seen = link::seen();
         let allows = link::pending();
@@ -220,122 +206,37 @@ impl Hop {
             return;
         };
         let addresses = targets.to_vec();
-        self.spawn_exchange(target.clone(), "take", addresses.clone());
-        self.phase = Phase::Asking {
-            target,
-            addresses,
+        self.flight = Some(std::thread::spawn(move || {
+            link::handover(target, addresses)
+        }));
+        self.phase = Phase::Sending {
             started: Instant::now(),
         };
     }
 
     fn drive_send(&mut self) {
-        let (started, dropping) = match &self.phase {
-            Phase::Idle => return,
-            Phase::Asking { started, .. } => (*started, false),
-            Phase::Dropping { started, .. } => (*started, true),
-            Phase::Releasing { started, .. } => (*started, false),
+        let Phase::Sending { started } = self.phase else {
+            return;
         };
-        let limit = if dropping {
-            Duration::from_secs(4)
-        } else {
-            Duration::from_secs(8)
-        };
-        if started.elapsed() > limit {
-            self.flight = None;
-            let phase = std::mem::replace(&mut self.phase, Phase::Idle);
-            match phase {
-                Phase::Asking { .. } => {
-                    self.report(handoff::Outcome::Stayed(
-                        handoff::StayReason::PeerUnreachable,
-                    ));
-                }
-                Phase::Dropping { addresses, .. } => {
-                    self.bring_back(&addresses);
-                    self.report(handoff::Outcome::Stayed(handoff::StayReason::StillHere));
-                }
-                Phase::Releasing { addresses, .. } => {
-                    self.bring_back(&addresses);
-                    self.report(handoff::Outcome::Reconnected(addresses));
-                }
-                Phase::Idle => {}
+        let timed_out = started.elapsed() > Duration::from_secs(60);
+        let finished = self
+            .flight
+            .as_ref()
+            .is_some_and(|flight| flight.is_finished());
+        if !timed_out && !finished {
+            return;
+        }
+        let outcome = self.flight.take().and_then(|flight| {
+            if flight.is_finished() {
+                flight.join().ok()
+            } else {
+                None
             }
-            return;
-        }
-        if dropping {
-            let Phase::Dropping {
-                target, addresses, ..
-            } = std::mem::replace(&mut self.phase, Phase::Idle)
-            else {
-                return;
-            };
-            let gone = addresses
-                .iter()
-                .all(|address| !bluetooth::connected(address));
-            match handoff::after_drop(gone) {
-                handoff::DropResult::Release => {
-                    self.spawn_exchange(target, "released", addresses.clone());
-                    self.phase = Phase::Releasing {
-                        addresses,
-                        started: Instant::now(),
-                    };
-                }
-                handoff::DropResult::Stay(_) => {
-                    self.phase = Phase::Dropping {
-                        target,
-                        addresses,
-                        started,
-                    };
-                }
-            }
-            return;
-        }
-        let Some(result) = take_flight(&mut self.flight) else {
-            return;
-        };
-        let phase = std::mem::replace(&mut self.phase, Phase::Idle);
-        let reply = result.ok().map(|body| body.op);
-        match phase {
-            Phase::Asking {
-                target, addresses, ..
-            } => match handoff::after_ask(reply.as_deref()) {
-                handoff::AskResult::Disconnect => {
-                    for address in &addresses {
-                        let _ = bluetooth::disconnect(address);
-                    }
-                    self.phase = Phase::Dropping {
-                        target,
-                        addresses,
-                        started: Instant::now(),
-                    };
-                }
-                handoff::AskResult::Stay(reason) => {
-                    self.report(handoff::Outcome::Stayed(reason));
-                }
-            },
-            Phase::Releasing { addresses, .. } => match handoff::after_release(reply.as_deref()) {
-                handoff::ReleaseResult::Moved => {
-                    self.notice = None;
-                    self.publish_status();
-                }
-                handoff::ReleaseResult::Reconnect => {
-                    self.bring_back(&addresses);
-                    self.report(handoff::Outcome::Reconnected(addresses));
-                }
-            },
-            other => self.phase = other,
-        }
-    }
-
-    fn spawn_exchange(&mut self, target: link::Target, op: &'static str, addresses: Vec<String>) {
-        self.flight = Some(std::thread::spawn(move || {
-            link::exchange(&target, op, &addresses)
-        }));
-    }
-
-    fn bring_back(&self, addresses: &[String]) {
-        for address in addresses {
-            let _ = bluetooth::connect(address);
-        }
+        });
+        self.phase = Phase::Idle;
+        self.report(outcome.unwrap_or(handoff::Outcome::Stayed(
+            handoff::StayReason::PeerUnreachable,
+        )));
     }
 
     fn note_peer(&mut self) {
@@ -603,19 +504,6 @@ fn summary(chosen: usize, peer: handoff::Peer, seen: link::Seen) -> String {
         (count, handoff::Peer::Ready) => {
             format!("{count} chosen. Send moves the ones that are connected.")
         }
-    }
-}
-
-fn take_flight(
-    flight: &mut Option<JoinHandle<Result<wire::Body, String>>>,
-) -> Option<Result<wire::Body, String>> {
-    let finished = flight.as_ref()?.is_finished();
-    if !finished {
-        return None;
-    }
-    match flight.take()?.join() {
-        Ok(result) => Some(result),
-        Err(_) => Some(Err("The send was interrupted.".into())),
     }
 }
 

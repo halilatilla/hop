@@ -14,7 +14,7 @@ Both Macs run Hop. Each one announces itself on the local network. The first tim
 
 **Send to the other Mac**, in the menu bar or the window, asks the other Mac to take the devices before anything disconnects. A checked row in the menu is a device connected on this Mac; choosing that row sends only that device. A device that is not connected here is left alone, so sending again does not bring it back.
 
-If the other Mac does not answer, or has not allowed this Mac, nothing disconnects. If the devices do disconnect and the other Mac does not take them, Hop connects them again on this Mac. While the window is closed, that failure is one notification, replaced if you send again.
+If the other Mac does not answer, has not allowed this Mac, or does not have that device paired, nothing disconnects. If the devices do disconnect and the other Mac does not take them, Hop connects them again on this Mac. While the window is closed, that failure is one notification, replaced if you send again.
 
 The other Mac has to be awake, on the same network, and running Hop. A Mac that has not been allowed cannot make Hop disconnect anything.
 

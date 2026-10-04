@@ -35,6 +35,7 @@ pub enum StayReason {
     NeedsAllow,
     Crowd,
     Refused,
+    NotPaired,
     StillHere,
 }
 
@@ -62,6 +63,7 @@ pub fn after_ask(reply: Option<&str>) -> AskResult {
     match reply {
         Some("accept") => AskResult::Disconnect,
         Some("refuse") => AskResult::Stay(StayReason::Refused),
+        Some("unpaired") => AskResult::Stay(StayReason::NotPaired),
         _ => AskResult::Stay(StayReason::PeerUnreachable),
     }
 }
@@ -102,6 +104,9 @@ pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
         StayReason::Refused => {
             Some("The other Mac has not allowed this Mac. Devices stayed on this Mac.")
         }
+        StayReason::NotPaired => Some(
+            "That device is not paired on the other Mac. Pair it there once, in Bluetooth settings. It stayed on this Mac.",
+        ),
         StayReason::StillHere => Some("The devices stayed on this Mac."),
     }
 }
@@ -217,7 +222,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_stranger_reply_does_not_disconnect() {
         assert_eq!(
             after_ask(None),
@@ -226,6 +230,10 @@ mod tests {
         assert_eq!(
             after_ask(Some("refuse")),
             AskResult::Stay(StayReason::Refused)
+        );
+        assert_eq!(
+            after_ask(Some("unpaired")),
+            AskResult::Stay(StayReason::NotPaired)
         );
         assert_eq!(after_ask(Some("accept")), AskResult::Disconnect);
     }

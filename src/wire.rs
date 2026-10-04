@@ -88,6 +88,33 @@ pub enum Reply {
     Connect,
 }
 
+pub fn canon(address: &str) -> String {
+    let hex: String = address
+        .chars()
+        .filter(|ch| ch.is_ascii_hexdigit())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+    if hex.is_empty() || hex.len() % 2 != 0 {
+        return String::new();
+    }
+    let mut out = String::with_capacity(hex.len() / 2 * 3);
+    for (index, ch) in hex.chars().enumerate() {
+        if index > 0 && index % 2 == 0 {
+            out.push('-');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn listed(paired: &HashSet<String>, addresses: &[String]) -> bool {
+    !addresses.is_empty()
+        && addresses.iter().all(|address| {
+            let address = canon(address);
+            !address.is_empty() && paired.iter().any(|have| canon(have) == address)
+        })
+}
+
 pub fn reply(
     request_op: &str,
     allowed: bool,
@@ -95,10 +122,11 @@ pub fn reply(
     paired: &HashSet<String>,
     addresses: &[String],
 ) -> Reply {
-    let known = !addresses.is_empty() && addresses.iter().all(|address| paired.contains(address));
+    let known = listed(paired, addresses);
     match request_op {
-        "take" if allowed && fresh && known => Reply::Message("accept"),
-        "take" => Reply::Message("refuse"),
+        "take" if !allowed || !fresh || addresses.is_empty() => Reply::Message("refuse"),
+        "take" if !known => Reply::Message("unpaired"),
+        "take" => Reply::Message("accept"),
         "released" if allowed && fresh && known => Reply::Connect,
         "released" => Reply::Message("failed"),
         _ => Reply::Message("refuse"),
@@ -193,7 +221,8 @@ pub fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Body, Identity, Reply, fresh, hex, parse_key, read_frame, reply, seal, unseal, write_frame,
+        Body, Identity, Reply, canon, fresh, hex, parse_key, read_frame, reply, seal, unseal,
+        write_frame,
     };
     use std::collections::HashSet;
     use std::net::TcpListener;
@@ -225,7 +254,7 @@ mod tests {
         ));
         assert!(matches!(
             reply("take", true, true, &mouse, &["cc-dd".into()]),
-            Reply::Message("refuse")
+            Reply::Message("unpaired")
         ));
         assert!(matches!(
             reply("take", true, true, &mouse, &[]),
@@ -234,6 +263,11 @@ mod tests {
         assert!(matches!(
             reply("released", true, true, &mouse, &["aa-bb".into()]),
             Reply::Connect
+        ));
+        let mouse = paired("aa-bb-cc-dd-ee-ff");
+        assert!(matches!(
+            reply("take", true, true, &mouse, &["AA:BB:CC:DD:EE:FF".into()]),
+            Reply::Message("accept")
         ));
     }
 
@@ -302,6 +336,13 @@ mod tests {
         assert_eq!(reply.id, "abc");
         assert_ne!(key, client_key.public_key());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn addresses_match_with_colons_or_dashes() {
+        assert_eq!(canon("AA:BB:CC:DD:EE:FF"), "aa-bb-cc-dd-ee-ff");
+        assert_eq!(canon("aa-bb-cc-dd-ee-ff"), "aa-bb-cc-dd-ee-ff");
+        assert_eq!(canon("not a device"), "");
     }
 
     #[test]

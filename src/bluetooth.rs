@@ -11,55 +11,122 @@ pub struct PairedDevice {
     pub connected: bool,
 }
 
-pub fn connected(address: &str) -> bool {
+/// Eight seconds. A Bluetooth page slot is 0.625 ms, so 0x3200 is one try.
+const PAGE_SLOTS: u16 = 0x3200;
+
+pub fn disconnect_all_then<R: Send + 'static>(
+    addresses: &[String],
+    then: impl FnOnce(bool) -> R + Send + 'static,
+) -> R {
     #[cfg(target_os = "macos")]
     {
-        use objc::{msg_send, sel, sel_impl};
-        with_device(address, |device| unsafe {
-            let connected: bool = msg_send![device, isConnected];
-            connected
+        let addresses = addresses.to_vec();
+        on_main(move || {
+            for address in &addresses {
+                close_here(address);
+            }
+            let gone = addresses.iter().all(|address| !connected_here(address));
+            then(gone)
         })
-        .unwrap_or(false)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = address;
+        let _ = addresses;
+        then(false)
+    }
+}
+
+pub fn connect_all(addresses: &[String]) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let addresses = addresses.to_vec();
+        on_main(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(16);
+            loop {
+                let ready = addresses.iter().all(|address| connect_here(address));
+                if ready || std::time::Instant::now() >= deadline {
+                    return ready;
+                }
+            }
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = addresses;
         false
     }
 }
 
-pub fn disconnect(address: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        use objc::{msg_send, sel, sel_impl};
-        with_device(address, |device| unsafe {
-            let result: i32 = msg_send![device, closeConnection];
-            result == 0
-        })
-        .unwrap_or(false)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = address;
-        false
-    }
+#[cfg(target_os = "macos")]
+fn connected_here(address: &str) -> bool {
+    use objc::{msg_send, sel, sel_impl};
+    with_device(address, |device| unsafe {
+        let connected: bool = msg_send![device, isConnected];
+        connected
+    })
+    .unwrap_or(false)
 }
 
-pub fn connect(address: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        use objc::{msg_send, sel, sel_impl};
-        with_device(address, |device| unsafe {
-            let result: i32 = msg_send![device, openConnection];
-            result == 0
-        })
-        .unwrap_or(false)
+#[cfg(target_os = "macos")]
+fn close_here(address: &str) {
+    use objc::{msg_send, sel, sel_impl};
+    let _ = with_device(address, |device| unsafe {
+        let result: i32 = msg_send![device, closeConnection];
+        result == 0
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn connect_here(address: &str) -> bool {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    if connected_here(address) {
+        return true;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = address;
-        false
+    let _ = with_device(address, |device| unsafe {
+        let target: *mut Object = std::ptr::null_mut();
+        let result: i32 = msg_send![
+            device,
+            openConnection: target
+            withPageTimeout: PAGE_SLOTS
+            authenticationRequired: false
+        ];
+        result == 0
+    });
+    connected_here(address)
+}
+
+#[cfg(target_os = "macos")]
+fn on_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    use block::ConcreteBlock;
+
+    unsafe extern "C" {
+        fn pthread_main_np() -> i32;
+        fn dispatch_get_main_queue() -> *mut std::ffi::c_void;
+        fn dispatch_sync(queue: *mut std::ffi::c_void, block: *const std::ffi::c_void);
     }
+
+    if unsafe { pthread_main_np() } != 0 {
+        return work();
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let work = std::sync::Mutex::new(Some(work));
+    let block = ConcreteBlock::new(move || {
+        let Some(work) = work.lock().ok().and_then(|mut slot| slot.take()) else {
+            return;
+        };
+        let _ = tx.send(work());
+    });
+    let block = block.copy();
+    unsafe {
+        dispatch_sync(
+            dispatch_get_main_queue(),
+            &*block as *const block::Block<(), ()> as *const std::ffi::c_void,
+        );
+    }
+    rx.recv().unwrap_or_else(|_| {
+        panic!("Bluetooth work on the main thread did not finish");
+    })
 }
 
 pub fn paired_devices() -> Result<Vec<PairedDevice>, String> {
@@ -217,7 +284,7 @@ fn with_device<T>(address: &str, f: impl FnOnce(*mut objc::runtime::Object) -> T
 
     load_framework();
     let device_class = Class::get("IOBluetoothDevice")?;
-    let want = address.trim().to_ascii_lowercase();
+    let want = crate::wire::canon(address);
     if want.is_empty() {
         return None;
     }
@@ -235,7 +302,7 @@ fn with_device<T>(address: &str, f: impl FnOnce(*mut objc::runtime::Object) -> T
                 let Some(have) = ns_string(msg_send![device, addressString]) else {
                     continue;
                 };
-                if have.trim().eq_ignore_ascii_case(&want) {
+                if crate::wire::canon(&have) == want {
                     found = Some(f(device));
                     break;
                 }

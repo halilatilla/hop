@@ -6,9 +6,9 @@ use std::io::{self, ErrorKind};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -52,15 +52,7 @@ struct World {
     sights: Vec<Sight>,
 }
 
-struct Job {
-    addresses: Vec<String>,
-    result: Mutex<Option<bool>>,
-    cv: Condvar,
-    started: Instant,
-}
-
 static WORLD: OnceLock<Arc<Mutex<World>>> = OnceLock::new();
-static JOB: Mutex<Option<Arc<Job>>> = Mutex::new(None);
 
 pub fn start() {
     static ONCE: Once = Once::new();
@@ -195,7 +187,11 @@ pub fn set_paired(addresses: HashSet<String>) {
         return;
     };
     if let Ok(mut world) = world.lock() {
-        world.paired = addresses;
+        world.paired = addresses
+            .into_iter()
+            .map(|address| wire::canon(&address))
+            .filter(|address| !address.is_empty())
+            .collect();
     }
 }
 
@@ -223,7 +219,95 @@ pub fn target() -> Option<Target> {
     found
 }
 
-pub fn exchange(target: &Target, op: &str, addresses: &[String]) -> Result<Body, String> {
+pub fn handover(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome {
+    use crate::handoff::{AskResult, Outcome, ReleaseResult, StayReason};
+
+    let addresses: Vec<String> = addresses
+        .iter()
+        .map(|address| wire::canon(address))
+        .filter(|address| !address.is_empty())
+        .collect();
+    if addresses.is_empty() {
+        return Outcome::Stayed(StayReason::NothingHere);
+    }
+    let asked = exchange(&target, "take", &addresses, Duration::from_secs(8)).ok();
+    match crate::handoff::after_ask(asked.as_ref().map(|body| body.op.as_str())) {
+        AskResult::Stay(reason) => return Outcome::Stayed(reason),
+        AskResult::Disconnect => {}
+    }
+    let Some(release) = prepare_release(&target, &addresses) else {
+        return Outcome::Stayed(StayReason::PeerUnreachable);
+    };
+    let (mut stream, id, sealed) = release;
+    let (mut stream, radio) = crate::bluetooth::disconnect_all_then(&addresses, move |gone| {
+        if !gone {
+            return (stream, Radio::Held);
+        }
+        if wire::write_frame(&mut stream, &sealed).is_ok() {
+            (stream, Radio::Told)
+        } else {
+            (stream, Radio::Dropped)
+        }
+    });
+    match radio {
+        Radio::Held => {
+            let _ = crate::bluetooth::connect_all(&addresses);
+            return Outcome::Stayed(StayReason::StillHere);
+        }
+        Radio::Dropped => {
+            let _ = crate::bluetooth::connect_all(&addresses);
+            return Outcome::Reconnected(addresses);
+        }
+        Radio::Told => {}
+    }
+    let reply = read_release(&target, &mut stream, &id).ok();
+    match crate::handoff::after_release(reply.as_deref()) {
+        ReleaseResult::Moved => Outcome::Moved(addresses),
+        ReleaseResult::Reconnect => {
+            let _ = crate::bluetooth::connect_all(&addresses);
+            Outcome::Reconnected(addresses)
+        }
+    }
+}
+
+enum Radio {
+    Held,
+    Told,
+    Dropped,
+}
+
+fn prepare_release(target: &Target, addresses: &[String]) -> Option<(TcpStream, String, Vec<u8>)> {
+    let identity = world()?.lock().ok()?.identity.clone();
+    let id = wire::new_id();
+    let body = Body {
+        op: "released".to_string(),
+        id: id.clone(),
+        exp: wire::now_secs().saturating_add(30),
+        addresses: addresses.to_vec(),
+    };
+    let stream = connect_host(&target.host, target.port).ok()?;
+    nosigpipe(&stream);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(24)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    Some((stream, id, wire::seal(&identity, &body)))
+}
+
+fn read_release(target: &Target, stream: &mut TcpStream, id: &str) -> Result<String, String> {
+    let reply_bytes = wire::read_frame(stream).map_err(|err| err.to_string())?;
+    let (key, reply) =
+        wire::unseal(&reply_bytes).ok_or_else(|| "The other Mac sent a bad reply.".to_string())?;
+    if key != target.key || reply.id != id {
+        return Err("The other Mac sent an unexpected reply.".into());
+    }
+    Ok(reply.op)
+}
+
+pub fn exchange(
+    target: &Target,
+    op: &str,
+    addresses: &[String],
+    timeout: Duration,
+) -> Result<Body, String> {
     let world = world().ok_or_else(|| "Hop is not listening.".to_string())?;
     let identity = world
         .lock()
@@ -239,8 +323,8 @@ pub fn exchange(target: &Target, op: &str, addresses: &[String]) -> Result<Body,
     };
     let mut stream = connect_host(&target.host, target.port)?;
     nosigpipe(&stream);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
     wire::write_frame(&mut stream, &wire::seal(&identity, &body)).map_err(|err| err.to_string())?;
     let reply_bytes = wire::read_frame(&mut stream).map_err(|err| err.to_string())?;
     let (key, reply) =
@@ -251,36 +335,6 @@ pub fn exchange(target: &Target, op: &str, addresses: &[String]) -> Result<Body,
     Ok(reply)
 }
 
-pub fn drive_bluetooth() {
-    let job = {
-        let Ok(slot) = JOB.lock() else {
-            return;
-        };
-        let Some(job) = slot.clone() else {
-            return;
-        };
-        job
-    };
-    let ready = job.addresses.iter().all(|address| {
-        let _ = crate::bluetooth::connect(address);
-        crate::bluetooth::connected(address)
-    });
-    if ready || job.started.elapsed() > Duration::from_secs(3) {
-        if let Ok(mut result) = job.result.lock() {
-            *result = Some(ready);
-        }
-        job.cv.notify_all();
-        if let Ok(mut slot) = JOB.lock() {
-            if slot
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &job))
-            {
-                *slot = None;
-            }
-        }
-    }
-}
-
 fn world() -> Option<Arc<Mutex<World>>> {
     WORLD.get().cloned()
 }
@@ -289,35 +343,10 @@ fn peers_path() -> PathBuf {
     crate::choice::config_dir().join("peers.json")
 }
 
-fn wait_until_connected(addresses: &[String]) -> bool {
-    let job = Arc::new(Job {
-        addresses: addresses.to_vec(),
-        result: Mutex::new(None),
-        cv: Condvar::new(),
-        started: Instant::now(),
-    });
-    {
-        let Ok(mut slot) = JOB.lock() else {
-            return false;
-        };
-        if slot.is_some() {
-            return false;
-        }
-        *slot = Some(job.clone());
-    }
-    let Ok(guard) = job.result.lock() else {
-        return false;
-    };
-    let Ok((guard, _)) = job.cv.wait_timeout(guard, Duration::from_secs(4)) else {
-        return false;
-    };
-    guard.unwrap_or(false)
-}
-
 fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
     nosigpipe(&stream);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let Ok(bytes) = wire::read_frame(&mut stream) else {
         return;
     };
@@ -336,7 +365,7 @@ fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
     let op = match decision {
         Reply::Message(op) => op,
         Reply::Connect => {
-            if wait_until_connected(&body.addresses) {
+            if crate::bluetooth::connect_all(&body.addresses) {
                 "took"
             } else {
                 "failed"
@@ -366,9 +395,11 @@ impl World {
 }
 
 fn connect_host(host: &str, port: u16) -> Result<TcpStream, String> {
-    let addrs = (host, port)
+    let mut addrs = (host, port)
         .to_socket_addrs()
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| err.to_string())?
+        .collect::<Vec<_>>();
+    addrs.sort_by_key(|addr| addr.is_ipv6());
     let mut last = "could not connect".to_string();
     let mut tried = false;
     for addr in addrs {
