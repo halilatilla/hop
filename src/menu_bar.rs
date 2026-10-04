@@ -58,7 +58,6 @@ pub fn set_devices(devices: Vec<MenuDevice>) {
     let _ = devices;
 }
 
-/// One notice, replaced if Send fails again. Used when the window is closed.
 pub fn notify_stayed() {
     #[cfg(target_os = "macos")]
     notify_stayed_mac();
@@ -135,9 +134,6 @@ fn install_mac() {
                 let Some(device) = rows.get(index) else {
                     return;
                 };
-                if !device.connected {
-                    return;
-                }
                 MenuCommand::SendOne(device.address.clone())
             }
             _ => return,
@@ -310,7 +306,6 @@ fn set_devices_mac(devices: Vec<MenuDevice>) {
         add_separator(menu);
         for (index, device) in devices.iter().enumerate() {
             let item = add_item(menu, target, &device.name, "", DEVICE_TAG + index as isize);
-            // NSControlStateValueOn shows the checkmark: this device is on this Mac.
             let state: isize = if device.connected { 1 } else { 0 };
             let _: () = msg_send![item, setState: state];
             let _: () = msg_send![item, setEnabled: device.connected];
@@ -327,17 +322,11 @@ fn set_devices_mac(devices: Vec<MenuDevice>) {
 
 #[cfg(target_os = "macos")]
 fn notify_stayed_mac() {
-    use objc::runtime::{Class, Object};
-    use objc::{msg_send, sel, sel_impl};
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
 
-    let Some(note_class) = Class::get("NSUserNotification") else {
-        return;
-    };
-    let Some(center_class) = Class::get("NSUserNotificationCenter") else {
-        return;
-    };
     unsafe {
-        let note: *mut Object = msg_send![note_class, alloc];
+        let note: *mut Object = msg_send![class!(NSUserNotification), alloc];
         let note: *mut Object = msg_send![note, init];
         if note.is_null() {
             return;
@@ -347,7 +336,10 @@ fn notify_stayed_mac() {
             "The other Mac is not running Hop. Devices stayed on this Mac."
         )];
         let _: () = msg_send![note, setIdentifier: ns_string("hop-send-stayed")];
-        let center: *mut Object = msg_send![center_class, defaultUserNotificationCenter];
+        let center: *mut Object = msg_send![
+            class!(NSUserNotificationCenter),
+            defaultUserNotificationCenter
+        ];
         if center.is_null() {
             return;
         }

@@ -1,8 +1,4 @@
 //! Which paired devices Hop should send.
-//!
-//! Written as JSON, to a temporary file first, so a crash cannot leave an empty
-//! choice. A file that does not parse is an error. `HOP_CONFIG_DIR` overrides
-//! the directory.
 
 use std::collections::HashSet;
 use std::fs;
@@ -72,7 +68,6 @@ fn parse_json(text: &str) -> io::Result<HashSet<String>> {
         .collect())
 }
 
-/// `chosen.txt` from before the JSON file. Used only when `choice.json` is absent.
 fn load_legacy(json_path: &Path) -> io::Result<HashSet<String>> {
     let legacy = json_path.with_file_name("chosen.txt");
     match fs::read_to_string(&legacy) {

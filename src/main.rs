@@ -33,7 +33,6 @@ fn main() {
         let hop = cx.new(|cx| Hop::new(cx));
         cx.set_global(HopKeepAlive(hop.clone()));
         hop.update(cx, |hop, cx| hop.start(cx));
-        // The menu bar is the app. Other platforms have no status item.
         #[cfg(not(target_os = "macos"))]
         open_window(cx, &hop);
     });

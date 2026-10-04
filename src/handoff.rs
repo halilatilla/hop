@@ -1,28 +1,20 @@
 //! Whether chosen devices may leave this Mac.
-//!
-//! A move checks the other Mac before any device disconnects. If that check
-//! fails, nothing changes. If the devices do disconnect and the other Mac does
-//! not take them, they connect again here.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Peer {
     Missing,
-    /// Produced once a link can prove the other Mac is running Hop.
     #[allow(dead_code)]
     Ready,
 }
 
-/// Result of asking the other Mac whether it will accept a move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preflight {
     Unreachable,
     Accepted,
 }
 
-/// What the other Mac did after the devices disconnected here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerReply {
-    /// The other Mac connected the devices. Not produced until a link exists.
     #[allow(dead_code)]
     TookThem,
     Failed,
@@ -36,9 +28,7 @@ pub enum BluetoothOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StayReason {
-    /// Send while this Mac is not holding the devices. A repeat does not fetch them back.
     NothingHere,
-    /// The other Mac did not accept the move. Nothing disconnected.
     PeerUnreachable,
 }
 
@@ -46,11 +36,9 @@ pub enum StayReason {
 pub enum Outcome {
     Stayed(StayReason),
     Moved(Vec<String>),
-    /// The other Mac did not take them, so they connect again on this Mac.
     Reconnected(Vec<String>),
 }
 
-/// This build has no link to the other Mac, so a ping cannot succeed.
 pub fn observe_peer() -> Peer {
     Peer::Missing
 }
@@ -59,8 +47,6 @@ pub fn preflight_now() -> Preflight {
     Preflight::Unreachable
 }
 
-/// Plans the move. `connected` is the devices this Mac is holding.
-/// An unreachable peer, or an empty list, produces no Bluetooth operations.
 pub fn run(
     preflight: Preflight,
     connected: &[String],
@@ -88,8 +74,6 @@ pub fn run(
     }
 }
 
-/// Applies a plan. Any operation is refused until Hop can ask the other Mac to
-/// connect the devices, so a disconnect never happens on its own.
 pub fn execute(ops: &[BluetoothOp]) -> bool {
     ops.is_empty()
 }
