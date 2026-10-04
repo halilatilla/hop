@@ -51,7 +51,7 @@ struct Hop {
     focus: FocusHandle,
     devices: Vec<DeviceView>,
     list_error: Option<String>,
-    chosen: HashSet<String>,
+    choice: choice::Choice,
     peer: handoff::Peer,
     seen: link::Seen,
     allows: Vec<link::Nearby>,
@@ -78,9 +78,9 @@ impl Hop {
             focus: cx.focus_handle(),
             devices: Vec::new(),
             list_error: None,
-            chosen: choice::load(&choice::choice_path()).unwrap_or_else(|err| {
-                eprintln!("hop: using no chosen devices ({err})");
-                HashSet::new()
+            choice: choice::load(&choice::choice_path()).unwrap_or_else(|err| {
+                eprintln!("hop: using an empty shared list ({err})");
+                choice::Choice::default()
             }),
             peer: handoff::Peer::Missing,
             seen: link::Seen::None,
@@ -114,6 +114,8 @@ impl Hop {
 
     fn on_tick(&mut self, cx: &mut Context<Self>) {
         self.ticks = self.ticks.wrapping_add(1);
+        self.absorb_peer(cx);
+        link::set_shared(self.choice.addresses.clone());
         link::set_paired(
             self.devices
                 .iter()
@@ -123,6 +125,15 @@ impl Hop {
         self.drive_send();
         let seen = link::seen();
         let allows = link::pending();
+        let became_ready =
+            matches!(seen, link::Seen::Ready) && !matches!(self.seen, link::Seen::Ready);
+        if became_ready
+            || (matches!(seen, link::Seen::Ready)
+                && !self.choice.quiet.is_empty()
+                && self.ticks.is_multiple_of(40))
+        {
+            self.push_list();
+        }
         if seen != self.seen || allows != self.allows {
             if matches!(self.phase, Phase::Idle) {
                 self.notice = None;
@@ -146,6 +157,8 @@ impl Hop {
                 }
                 MenuCommand::SendAll => self.send_all(),
                 MenuCommand::SendOne(address) => self.send_one(&address),
+                MenuCommand::UseAll => self.use_here(),
+                MenuCommand::UseOne(address) => self.use_one(&address),
                 MenuCommand::Allow(id) => {
                     link::allow(&id);
                     self.note_peer();
@@ -160,16 +173,38 @@ impl Hop {
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let (devices, list_error) = match bluetooth::paired_devices() {
-            Ok(list) => (views(list, &self.chosen), None),
+            Ok(list) => (views(list, &self.choice.addresses), None),
             Err(err) => (Vec::new(), Some(err)),
         };
         if devices != self.devices || list_error != self.list_error {
             self.devices = devices;
             self.list_error = list_error;
+            if self.remember_names() {
+                self.persist();
+                if matches!(self.seen, link::Seen::Ready) {
+                    self.push_list();
+                }
+            }
             self.publish_status();
             self.sync_menu();
             cx.notify();
         }
+    }
+
+    fn remember_names(&mut self) -> bool {
+        let mut changed = false;
+        for device in &self.devices {
+            if !self.choice.addresses.contains(&device.address) || device.name.is_empty() {
+                continue;
+            }
+            if self.choice.names.get(&device.address) != Some(&device.name) {
+                self.choice
+                    .names
+                    .insert(device.address.clone(), device.name.clone());
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn send_all(&mut self) {
@@ -177,14 +212,62 @@ impl Hop {
     }
 
     fn send_one(&mut self, address: &str) {
-        let on_this_mac = self
-            .devices
-            .iter()
-            .any(|device| device.address == address && device.chosen && device.connected);
+        let address = wire::canon(address);
+        let on_this_mac = self.devices.iter().any(|device| {
+            device.address == address
+                && self.choice.addresses.contains(&address)
+                && device.connected
+        });
         if !on_this_mac {
             return;
         }
-        self.send_addresses(std::slice::from_ref(&address.to_string()));
+        self.send_addresses(std::slice::from_ref(&address));
+    }
+
+    fn use_here(&mut self) {
+        if self.choice.addresses.is_empty() {
+            self.report(handoff::Outcome::Stayed(handoff::StayReason::NothingShared));
+            return;
+        }
+        let away = self.away();
+        if away.is_empty() {
+            self.report(handoff::Outcome::Stayed(handoff::StayReason::AlreadyHere));
+            return;
+        }
+        self.claim_addresses(&away);
+    }
+
+    fn use_one(&mut self, address: &str) {
+        let address = wire::canon(address);
+        if !self.choice.addresses.contains(&address) {
+            return;
+        }
+        let here = self
+            .devices
+            .iter()
+            .any(|device| device.address == address && device.connected);
+        if here {
+            return;
+        }
+        self.claim_addresses(std::slice::from_ref(&address));
+    }
+
+    fn away(&self) -> Vec<String> {
+        let here: HashSet<String> = self
+            .devices
+            .iter()
+            .filter(|device| device.connected)
+            .map(|device| device.address.clone())
+            .collect();
+        let mut away: Vec<_> = self
+            .choice
+            .addresses
+            .iter()
+            .filter(|address| !here.contains(*address))
+            .cloned()
+            .collect();
+        away.sort();
+        away
     }
 
     fn send_addresses(&mut self, targets: &[String]) {
@@ -209,6 +292,31 @@ impl Hop {
         self.flight = Some(std::thread::spawn(move || {
             link::handover(target, addresses)
         }));
+        self.phase = Phase::Sending {
+            started: Instant::now(),
+        };
+    }
+
+    fn claim_addresses(&mut self, targets: &[String]) {
+        if !matches!(self.phase, Phase::Idle) {
+            return;
+        }
+        self.notice = None;
+        if targets.is_empty() {
+            self.report(handoff::Outcome::Stayed(handoff::StayReason::NothingThere));
+            return;
+        }
+        let Some(target) = link::target() else {
+            let reason = match self.seen {
+                link::Seen::Nearby => handoff::StayReason::NeedsAllow,
+                link::Seen::Crowd => handoff::StayReason::Crowd,
+                _ => handoff::StayReason::PeerUnreachable,
+            };
+            self.report(handoff::Outcome::Stayed(reason));
+            return;
+        };
+        let addresses = targets.to_vec();
+        self.flight = Some(std::thread::spawn(move || link::claim(target, addresses)));
         self.phase = Phase::Sending {
             started: Instant::now(),
         };
@@ -264,13 +372,13 @@ impl Hop {
     fn connected_chosen(&self) -> Vec<String> {
         self.devices
             .iter()
-            .filter(|device| device.chosen && device.connected)
+            .filter(|device| self.choice.addresses.contains(&device.address) && device.connected)
             .map(|device| device.address.clone())
             .collect()
     }
 
     fn chosen_count(&self) -> usize {
-        self.devices.iter().filter(|device| device.chosen).count()
+        self.choice.addresses.len()
     }
 
     fn publish_status(&mut self) {
@@ -302,17 +410,53 @@ impl Hop {
         }
     }
 
-    fn sync_menu(&self) {
-        let rows = self
-            .devices
+    fn absorb_peer(&mut self, cx: &mut Context<Self>) {
+        let incoming = link::take_incoming();
+        let acked = link::take_acked();
+        if incoming.add.is_empty() && incoming.remove.is_empty() && acked.is_empty() {
+            return;
+        }
+        choice::absorb(&mut self.choice, &incoming.add, &incoming.remove);
+        for address in acked {
+            self.choice.quiet.remove(&wire::canon(&address));
+        }
+        self.persist();
+        for device in &mut self.devices {
+            device.chosen = self.choice.addresses.contains(&device.address);
+        }
+        self.publish_status();
+        self.sync_menu();
+        cx.notify();
+    }
+
+    fn push_list(&self) {
+        let mut add: Vec<_> = self.choice.addresses.iter().cloned().collect();
+        add.sort();
+        let names = add
             .iter()
-            .filter(|device| device.chosen)
-            .map(|device| menu_bar::MenuDevice {
-                address: device.address.clone(),
-                name: device.name.clone(),
-                connected: device.connected,
-            })
+            .map(|address| self.choice.names.get(address).cloned().unwrap_or_default())
             .collect();
+        let mut remove: Vec<_> = self.choice.quiet.iter().cloned().collect();
+        remove.sort();
+        link::announce(add, names, remove);
+    }
+
+    fn share_now(&self, add: Vec<String>, remove: Vec<String>) {
+        let names = add
+            .iter()
+            .map(|address| self.choice.names.get(address).cloned().unwrap_or_default())
+            .collect();
+        link::announce(add, names, remove);
+    }
+
+    fn persist(&self) {
+        if let Err(err) = choice::save(&choice::choice_path(), &self.choice) {
+            eprintln!("hop: could not save the shared list ({err})");
+        }
+    }
+
+    fn sync_menu(&self) {
+        let rows = self.menu_rows();
         let allows = self
             .allows
             .iter()
@@ -324,19 +468,98 @@ impl Hop {
         menu_bar::set_devices(rows, allows);
     }
 
-    fn toggle(&mut self, address: &str, cx: &mut Context<Self>) {
-        if !self.chosen.remove(address) {
-            self.chosen.insert(address.to_string());
-        }
-        let chosen = self.chosen.contains(address);
-        for device in &mut self.devices {
-            if device.address == address {
-                device.chosen = chosen;
+    fn menu_rows(&self) -> Vec<menu_bar::MenuDevice> {
+        let mut rows = Vec::new();
+        let mut seen = HashSet::new();
+        for device in &self.devices {
+            if !self.choice.addresses.contains(&device.address) {
+                continue;
             }
+            seen.insert(device.address.clone());
+            rows.push(menu_bar::MenuDevice {
+                address: device.address.clone(),
+                name: device.name.clone(),
+                connected: device.connected,
+            });
         }
-        if let Err(err) = choice::save(&choice::choice_path(), &self.chosen) {
-            eprintln!("hop: could not save the chosen devices ({err})");
+        let mut extra: Vec<_> = self
+            .choice
+            .addresses
+            .iter()
+            .filter(|address| !seen.contains(*address))
+            .cloned()
+            .collect();
+        extra.sort();
+        for address in extra {
+            let name = self
+                .choice
+                .names
+                .get(&address)
+                .cloned()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "Shared device".to_string());
+            rows.push(menu_bar::MenuDevice {
+                address,
+                name,
+                connected: false,
+            });
         }
+        rows
+    }
+
+    fn listed(&self) -> Vec<DeviceView> {
+        let mut rows = self.devices.clone();
+        let known: HashSet<_> = rows.iter().map(|device| device.address.clone()).collect();
+        let mut extra: Vec<_> = self
+            .choice
+            .addresses
+            .iter()
+            .filter(|address| !known.contains(*address))
+            .cloned()
+            .collect();
+        extra.sort();
+        for address in extra {
+            let name = self
+                .choice
+                .names
+                .get(&address)
+                .cloned()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "Shared device".to_string());
+            rows.push(DeviceView {
+                address,
+                name,
+                detail: "Shared · On the other Mac".to_string(),
+                chosen: true,
+                connected: false,
+            });
+        }
+        rows
+    }
+
+    fn toggle(&mut self, address: &str, cx: &mut Context<Self>) {
+        let address = wire::canon(address);
+        if address.is_empty() {
+            return;
+        }
+        if !self.choice.addresses.remove(&address) {
+            self.choice.addresses.insert(address.clone());
+            self.choice.quiet.remove(&address);
+            if let Some(device) = self.devices.iter().find(|device| device.address == address) {
+                self.choice
+                    .names
+                    .insert(address.clone(), device.name.clone());
+            }
+            self.share_now(vec![address.clone()], Vec::new());
+        } else {
+            self.choice.names.remove(&address);
+            self.choice.quiet.insert(address.clone());
+            self.share_now(Vec::new(), vec![address]);
+        }
+        for device in &mut self.devices {
+            device.chosen = self.choice.addresses.contains(&device.address);
+        }
+        self.persist();
         self.publish_status();
         self.sync_menu();
         cx.notify();
@@ -345,19 +568,23 @@ impl Hop {
 
 fn views(list: Vec<PairedDevice>, chosen: &HashSet<String>) -> Vec<DeviceView> {
     list.into_iter()
-        .map(|device| {
+        .filter_map(|device| {
+            let address = wire::canon(&device.address);
+            if address.is_empty() {
+                return None;
+            }
             let connection = if device.connected {
                 "Connected"
             } else {
                 "Not connected"
             };
-            DeviceView {
-                chosen: chosen.contains(&device.address),
+            Some(DeviceView {
+                chosen: chosen.contains(&address),
                 connected: device.connected,
                 detail: format!("{} · {connection}", device.kind),
-                address: device.address,
+                address,
                 name: device.name,
-            }
+            })
         })
         .collect()
 }
@@ -416,6 +643,8 @@ impl Render for Hop {
             .notice
             .clone()
             .unwrap_or_else(|| summary(chosen_count, peer, self.seen));
+        let listed = self.listed();
+        let list_error = self.list_error.clone();
         let mut list = div()
             .id("device-list")
             .flex()
@@ -424,14 +653,14 @@ impl Render for Hop {
             .min_h(px(0.0))
             .gap(px(8.0))
             .overflow_y_scroll();
-        if let Some(error) = &self.list_error {
-            list = list.child(note(error.clone()));
-        } else if self.devices.is_empty() {
+        if let Some(error) = list_error {
+            list = list.child(note(error));
+        } else if listed.is_empty() {
             list = list.child(note(
                 "No paired Bluetooth devices yet. Pair them in System Settings on both Macs.",
             ));
         } else {
-            for device in &self.devices {
+            for device in &listed {
                 let address = device.address.clone();
                 list = list.child(device_row(
                     device,
@@ -454,7 +683,7 @@ impl Render for Hop {
             .child(
                 div()
                     .text_size(px(15.0))
-                    .child("Choose which Bluetooth devices to send."),
+                    .child("Check a device to share it. Either Mac can take it."),
             )
             .child(
                 div()
@@ -465,7 +694,7 @@ impl Render for Hop {
             .child(list)
             .child(
                 div()
-                    .id("send-devices")
+                    .id("use-here")
                     .h(px(44.0))
                     .flex()
                     .items_center()
@@ -474,6 +703,21 @@ impl Render for Hop {
                     .bg(rgb(INK))
                     .text_color(rgb(PAPER))
                     .font_weight(FontWeight::BOLD)
+                    .text_size(px(16.0))
+                    .cursor_pointer()
+                    .child("Use here")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, _cx| this.use_here())),
+            )
+            .child(
+                div()
+                    .id("send-devices")
+                    .h(px(44.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(10.0))
+                    .bg(rgb(CARD))
+                    .text_color(rgb(INK))
                     .text_size(px(16.0))
                     .cursor_pointer()
                     .child("Send to the other Mac")
@@ -496,13 +740,19 @@ fn summary(chosen: usize, peer: handoff::Peer, seen: link::Seen) -> String {
         return "More than one other Mac is running Hop.".into();
     }
     match (chosen, peer) {
-        (0, handoff::Peer::Missing) => "Nothing chosen. The other Mac is not running Hop, so Send leaves everything connected here.".into(),
+        (0, handoff::Peer::Missing) => {
+            "Nothing is shared. The other Mac is not running Hop.".into()
+        }
         (_, handoff::Peer::Missing) => format!(
-            "{chosen} chosen. A checked row in the menu is on this Mac. The other Mac is not running Hop, so Send leaves them here."
+            "{chosen} shared. The other Mac is not running Hop, so the devices stay where they are."
         ),
-        (0, handoff::Peer::Ready) => "Nothing chosen. The other Mac can take a device that is connected here.".into(),
+        (0, handoff::Peer::Ready) => {
+            "Nothing is shared. Check a device, then either Mac can take it.".into()
+        }
         (count, handoff::Peer::Ready) => {
-            format!("{count} chosen. Send moves the ones that are connected.")
+            format!(
+                "{count} shared. Use here brings them to this Mac. Send moves the ones connected here."
+            )
         }
     }
 }

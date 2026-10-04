@@ -53,6 +53,28 @@ pub fn release_all(addresses: &[String]) -> bool {
     }
 }
 
+pub fn connected_ones(addresses: &[String]) -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut held = Vec::new();
+        for address in addresses {
+            let address = address.clone();
+            if on_main({
+                let address = address.clone();
+                move || connected_here(&address)
+            }) {
+                held.push(address);
+            }
+        }
+        held
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = addresses;
+        Vec::new()
+    }
+}
+
 pub fn connect_all(addresses: &[String]) -> bool {
     #[cfg(target_os = "macos")]
     {

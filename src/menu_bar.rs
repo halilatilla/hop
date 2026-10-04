@@ -8,6 +8,8 @@ pub enum MenuCommand {
     Open,
     SendAll,
     SendOne(String),
+    UseAll,
+    UseOne(String),
     Allow(String),
     Quit,
 }
@@ -29,6 +31,7 @@ const OPEN: isize = 1;
 const SEND_ALL: isize = 2;
 const QUIT: isize = 3;
 const ABOUT: isize = 4;
+const USE_ALL: isize = 5;
 const DEVICE_TAG: isize = 100;
 const ALLOW_TAG: isize = 1000;
 
@@ -145,6 +148,7 @@ fn install_mac() {
         let command = match tag {
             OPEN => MenuCommand::Open,
             SEND_ALL => MenuCommand::SendAll,
+            USE_ALL => MenuCommand::UseAll,
             QUIT => MenuCommand::Quit,
             tag if (DEVICE_TAG..ALLOW_TAG).contains(&tag) => {
                 let index = (tag - DEVICE_TAG) as usize;
@@ -154,7 +158,11 @@ fn install_mac() {
                 let Some(device) = rows.get(index) else {
                     return;
                 };
-                MenuCommand::SendOne(device.address.clone())
+                if device.connected {
+                    MenuCommand::SendOne(device.address.clone())
+                } else {
+                    MenuCommand::UseOne(device.address.clone())
+                }
             }
             tag if tag >= ALLOW_TAG => {
                 let index = (tag - ALLOW_TAG) as usize;
@@ -179,6 +187,7 @@ fn install_mac() {
             add_item(menu, target, "About Hop", "", ABOUT);
             add_separator(menu);
             add_item(menu, target, "Devices…", ",", OPEN);
+            add_item(menu, target, "Use here", "", USE_ALL);
             add_item(menu, target, "Send to the other Mac", "", SEND_ALL);
             add_separator(menu);
             add_item(menu, target, "Quit Hop", "q", QUIT);
@@ -196,6 +205,7 @@ fn install_mac() {
             add_item(submenu, target, "About Hop", "", ABOUT);
             add_separator(submenu);
             add_item(submenu, target, "Devices…", ",", OPEN);
+            add_item(submenu, target, "Use here", "", USE_ALL);
             add_item(submenu, target, "Send to the other Mac", "", SEND_ALL);
             add_separator(submenu);
             add_item(submenu, target, "Quit Hop", "q", QUIT);
@@ -337,6 +347,7 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
         return;
     }
     let any_connected = devices.iter().any(|device| device.connected);
+    let any_away = devices.iter().any(|device| !device.connected);
     unsafe {
         let _: () = msg_send![menu, removeAllItems];
         add_item(menu, target, "About Hop", "", ABOUT);
@@ -359,11 +370,12 @@ fn set_devices_mac(devices: Vec<MenuDevice>, allows: Vec<MenuAllow>) {
             let item = add_item(menu, target, &device.name, "", DEVICE_TAG + index as isize);
             let state: isize = if device.connected { 1 } else { 0 };
             let _: () = msg_send![item, setState: state];
-            let _: () = msg_send![item, setEnabled: device.connected];
         }
         if !devices.is_empty() {
             add_separator(menu);
         }
+        let use_here = add_item(menu, target, "Use here", "", USE_ALL);
+        let _: () = msg_send![use_here, setEnabled: any_away];
         let send = add_item(menu, target, "Send to the other Mac", "", SEND_ALL);
         let _: () = msg_send![send, setEnabled: any_connected];
         add_separator(menu);

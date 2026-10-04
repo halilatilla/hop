@@ -1,10 +1,10 @@
 # Hop
 
-Hop sends the Bluetooth devices you choose from this Mac to your other Mac. That can be a mouse, a keyboard, headphones, a trackpad, or anything else already paired. Each device stays paired to both Macs and connected to one. You pick which ones move.
+Hop shares the Bluetooth devices you check, then either Mac can take them. That can be a mouse, a keyboard, headphones, a trackpad, or anything else already paired. Each device stays paired to both Macs and connected to one.
 
-The two Macs already know each other. They use the same Apple Account, they are on the same network, and the devices are already paired in Bluetooth on both. Hop does not pair them, and it does not introduce the Macs.
+The two Macs already know each other. They use the same Apple Account, they are on the same network, and the devices are already paired in Bluetooth on both. Hop does not introduce the Macs.
 
-Hop runs in the menu bar. On a Mac the window stays closed until you choose **Devices…**. The status item shows how many devices are chosen. While the other Mac is not running Hop, it reads `no Mac`.
+Hop runs in the menu bar. On a Mac the window stays closed until you choose **Devices…**. The status item shows how many devices are shared. While the other Mac is not running Hop, it reads `no Mac`.
 
 ## How a move works
 
@@ -12,9 +12,11 @@ A Bluetooth device such as a Magic Mouse or a pair of headphones connects to one
 
 Both Macs run Hop. Each one announces itself on the local network. The first time the other Mac appears, choose **Allow** in the menu, on both Macs. After that, Hop remembers the other Mac.
 
-**Send to the other Mac**, in the menu bar or the window, asks the other Mac to take the devices before anything disconnects. A checked row in the menu is a device connected on this Mac; choosing that row sends only that device. A device that is not connected here is left alone, so sending again does not bring it back.
+Check a device in **Devices…** and it joins the shared list on both Macs. A checked row in the menu is on this Mac. A row without a check is on the other Mac.
 
-Send drops the chosen device from this Mac's Bluetooth list, then the other Mac connects it. If that Mac does not have it paired yet, it pairs it. If the other Mac does not answer or has not allowed this Mac, nothing is dropped. If the device does leave and the other Mac does not take it, Hop connects it again on this Mac. While the window is closed, that failure is one notification, replaced if you send again.
+**Use here**, on the Mac where you want the devices, asks the other Mac to let go and then connects them. You do not have to walk over and press Send. Clicking a row that is not on this Mac brings that one device. **Send to the other Mac** still moves the devices that are connected here, when you are leaving this Mac.
+
+Use here and Send both ask before anything disconnects. The other Mac drops the device from its Bluetooth list, then this Mac connects it. If this Mac does not have it paired yet, it pairs it. If the other Mac does not answer or has not allowed this Mac, nothing is dropped. If the device does leave and this Mac does not take it, Hop connects it again on the Mac that had it. While the window is closed, that failure is one notification, replaced if you try again. Send does not bring devices back.
 
 The other Mac has to be awake, on the same network, and running Hop. A Mac that has not been allowed cannot make Hop disconnect anything.
 
@@ -27,7 +29,7 @@ The window lists every device paired in Bluetooth. Tap one to include it. The ch
 
 Hop writes a temporary file and renames it into place. A file that does not parse is an error, and Hop starts with nothing chosen. If `choice.json` is missing and an older `chosen.txt` is there, Hop reads that list.
 
-The menu is **About Hop**, **Allow** when the other Mac is new, **Devices…**, **Send to the other Mac**, and **Quit Hop**. Closing the window leaves Hop running. The menu bar leaves `no Mac` once the other Mac has been allowed and answers.
+The menu is **About Hop**, **Allow** when the other Mac is new, **Devices…**, the shared devices, **Use here**, **Send to the other Mac**, and **Quit Hop**. Closing the window leaves Hop running. The menu bar leaves `no Mac` once the other Mac has been allowed and answers.
 
 macOS asks for Bluetooth access so Hop can read the paired devices. Local Network access comes when the two Macs link.
 

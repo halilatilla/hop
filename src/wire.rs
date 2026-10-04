@@ -81,11 +81,14 @@ pub struct Body {
     pub exp: u64,
     #[serde(default)]
     pub addresses: Vec<String>,
+    #[serde(default)]
+    pub names: Vec<String>,
 }
 
 pub enum Reply {
     Message(&'static str),
     Connect,
+    Give,
 }
 
 pub fn canon(address: &str) -> String {
@@ -121,6 +124,9 @@ pub fn reply(
         "take" => Reply::Message("accept"),
         "released" if allowed && fresh && named => Reply::Connect,
         "released" => Reply::Message("failed"),
+        "share" | "unshare" if allowed && fresh && named => Reply::Message("kept"),
+        "want" if allowed && fresh && named => Reply::Give,
+        "want" | "share" | "unshare" => Reply::Message("refuse"),
         _ => Reply::Message("refuse"),
     }
 }
@@ -283,6 +289,7 @@ mod tests {
             id: "1".into(),
             exp: 10,
             addresses: vec!["aa-bb".into()],
+            names: Vec::new(),
         };
         let mut sealed = seal(&identity, &body);
         let last = sealed.len() - 1;
@@ -312,6 +319,7 @@ mod tests {
                 id: body.id,
                 exp: body.exp,
                 addresses: Vec::new(),
+                names: Vec::new(),
             };
             write_frame(&mut stream, &seal(&server_key, &reply)).unwrap();
         });
@@ -321,6 +329,7 @@ mod tests {
             id: "abc".into(),
             exp: 30,
             addresses: vec!["aa-bb".into()],
+            names: Vec::new(),
         };
         write_frame(&mut stream, &seal(&client_key, &body)).unwrap();
         let (key, reply) = unseal(&read_frame(&mut stream).unwrap()).unwrap();
@@ -328,6 +337,27 @@ mod tests {
         assert_eq!(reply.id, "abc");
         assert_ne!(key, client_key.public_key());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn a_shared_device_can_be_asked_for_by_an_allowed_mac() {
+        let mouse = paired("aa-bb");
+        assert!(matches!(
+            reply("want", true, true, &mouse, &["aa-bb".into()]),
+            Reply::Give
+        ));
+        assert!(matches!(
+            reply("want", false, true, &mouse, &["aa-bb".into()]),
+            Reply::Message("refuse")
+        ));
+        assert!(matches!(
+            reply("share", true, true, &mouse, &["aa-bb".into()]),
+            Reply::Message("kept")
+        ));
+        assert!(matches!(
+            reply("unshare", true, false, &mouse, &["aa-bb".into()]),
+            Reply::Message("refuse")
+        ));
     }
 
     #[test]

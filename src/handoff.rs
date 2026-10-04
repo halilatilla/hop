@@ -37,6 +37,11 @@ pub enum StayReason {
     Refused,
     NotPaired,
     StillHere,
+    NothingThere,
+    NothingShared,
+    AlreadyHere,
+    Busy,
+    StayedThere,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,6 +89,24 @@ pub fn after_drop(gone: bool) -> DropResult {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WantResult {
+    Connect,
+    Local,
+    Stay(StayReason),
+}
+
+pub fn after_want(reply: Option<&str>) -> WantResult {
+    match reply {
+        Some("released") => WantResult::Connect,
+        Some("absent") => WantResult::Local,
+        Some("refuse") => WantResult::Stay(StayReason::Refused),
+        Some("busy") => WantResult::Stay(StayReason::Busy),
+        Some("still") => WantResult::Stay(StayReason::StayedThere),
+        _ => WantResult::Stay(StayReason::PeerUnreachable),
+    }
+}
+
 pub fn after_release(reply: Option<&str>) -> ReleaseResult {
     match reply {
         Some("took") => ReleaseResult::Moved,
@@ -112,6 +135,13 @@ pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
             "That device is not paired on the other Mac. Pair it there once, in Bluetooth settings. It stayed on this Mac.",
         ),
         StayReason::StillHere => Some("The devices stayed on this Mac."),
+        StayReason::NothingThere => Some("No shared device is on the other Mac."),
+        StayReason::NothingShared => {
+            Some("Nothing is on the shared list. Open Devices and check a device.")
+        }
+        StayReason::AlreadyHere => Some("Those shared devices are already on this Mac."),
+        StayReason::Busy => Some("Hop is already moving a device."),
+        StayReason::StayedThere => Some("The other Mac still has the devices."),
     }
 }
 
@@ -166,7 +196,7 @@ pub fn tooltip(peer: Peer) -> String {
         Peer::Missing => {
             "The other Mac is not running Hop. Send leaves devices on this Mac.".to_string()
         }
-        Peer::Ready => "The other Mac can take the devices that are connected here.".to_string(),
+        Peer::Ready => "Use here brings the shared devices to this Mac.".to_string(),
     }
 }
 
@@ -174,7 +204,8 @@ pub fn tooltip(peer: Peer) -> String {
 mod tests {
     use super::{
         AskResult, BluetoothOp, DropResult, Outcome, Peer, PeerReply, Preflight, ReleaseResult,
-        StayReason, after_ask, after_drop, after_release, execute, run, status_label, tooltip,
+        StayReason, WantResult, after_ask, after_drop, after_release, after_want, execute, run,
+        status_label, tooltip,
     };
 
     fn mouse() -> Vec<String> {
@@ -249,6 +280,21 @@ mod tests {
     }
 
     #[test]
+    fn asking_for_a_device_connects_only_after_the_other_mac_lets_go() {
+        assert_eq!(after_want(Some("released")), WantResult::Connect);
+        assert_eq!(after_want(Some("absent")), WantResult::Local);
+        assert_eq!(
+            after_want(Some("still")),
+            WantResult::Stay(StayReason::StayedThere)
+        );
+        assert_eq!(after_want(Some("busy")), WantResult::Stay(StayReason::Busy));
+        assert_eq!(
+            after_want(None),
+            WantResult::Stay(StayReason::PeerUnreachable)
+        );
+    }
+
+    #[test]
     fn a_failed_release_reconnects() {
         assert_eq!(after_release(Some("took")), ReleaseResult::Moved);
         assert_eq!(after_release(Some("failed")), ReleaseResult::Reconnect);
@@ -264,6 +310,10 @@ mod tests {
         assert_eq!(
             tooltip(Peer::Missing),
             "The other Mac is not running Hop. Send leaves devices on this Mac."
+        );
+        assert_eq!(
+            tooltip(Peer::Ready),
+            "Use here brings the shared devices to this Mac."
         );
     }
 }

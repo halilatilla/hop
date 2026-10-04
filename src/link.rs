@@ -6,6 +6,7 @@ use std::io::{self, ErrorKind};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -48,8 +49,29 @@ struct World {
     identity: Identity,
     allowed: HashMap<[u8; 32], String>,
     paired: HashSet<String>,
+    shared: HashSet<String>,
+    incoming_add: Vec<(String, String)>,
+    incoming_remove: Vec<String>,
+    acked_removals: Vec<String>,
     seen_ids: VecDeque<String>,
     sights: Vec<Sight>,
+}
+
+static MOVING: AtomicBool = AtomicBool::new(false);
+
+struct MoveGuard;
+
+impl Drop for MoveGuard {
+    fn drop(&mut self) {
+        MOVING.store(false, Ordering::Release);
+    }
+}
+
+fn begin_move() -> Option<MoveGuard> {
+    MOVING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|_| MoveGuard)
 }
 
 static WORLD: OnceLock<Arc<Mutex<World>>> = OnceLock::new();
@@ -64,6 +86,10 @@ pub fn start() {
             identity,
             allowed,
             paired: HashSet::new(),
+            shared: HashSet::new(),
+            incoming_add: Vec::new(),
+            incoming_remove: Vec::new(),
+            acked_removals: Vec::new(),
             seen_ids: VecDeque::new(),
             sights: Vec::new(),
         }));
@@ -220,6 +246,13 @@ pub fn target() -> Option<Target> {
 }
 
 pub fn handover(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome {
+    let Some(_guard) = begin_move() else {
+        return crate::handoff::Outcome::Stayed(crate::handoff::StayReason::Busy);
+    };
+    handover_move(target, addresses)
+}
+
+fn handover_move(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome {
     use crate::handoff::{AskResult, Outcome, ReleaseResult, StayReason};
 
     let addresses: Vec<String> = addresses
@@ -265,6 +298,7 @@ fn prepare_release(target: &Target, addresses: &[String]) -> Option<(TcpStream, 
         id: id.clone(),
         exp: wire::now_secs().saturating_add(30),
         addresses: addresses.to_vec(),
+        names: Vec::new(),
     };
     let stream = connect_host(&target.host, target.port).ok()?;
     nosigpipe(&stream);
@@ -283,10 +317,195 @@ fn read_release(target: &Target, stream: &mut TcpStream, id: &str) -> Result<Str
     Ok(reply.op)
 }
 
+pub fn set_shared(addresses: HashSet<String>) {
+    let Some(world) = world() else {
+        return;
+    };
+    if let Ok(mut world) = world.lock() {
+        let mut shared: HashSet<String> = addresses
+            .into_iter()
+            .map(|address| wire::canon(&address))
+            .filter(|address| !address.is_empty())
+            .collect();
+        for (address, _) in &world.incoming_add {
+            shared.insert(address.clone());
+        }
+        world.shared = shared;
+    }
+}
+
+pub struct Incoming {
+    pub add: Vec<(String, String)>,
+    pub remove: Vec<String>,
+}
+
+pub fn take_incoming() -> Incoming {
+    let Some(world) = world() else {
+        return Incoming {
+            add: Vec::new(),
+            remove: Vec::new(),
+        };
+    };
+    let Ok(mut world) = world.lock() else {
+        return Incoming {
+            add: Vec::new(),
+            remove: Vec::new(),
+        };
+    };
+    Incoming {
+        add: std::mem::take(&mut world.incoming_add),
+        remove: std::mem::take(&mut world.incoming_remove),
+    }
+}
+
+pub fn take_acked() -> Vec<String> {
+    let Some(world) = world() else {
+        return Vec::new();
+    };
+    world
+        .lock()
+        .map(|mut world| std::mem::take(&mut world.acked_removals))
+        .unwrap_or_default()
+}
+
+pub fn announce(add: Vec<String>, names: Vec<String>, remove: Vec<String>) {
+    if add.is_empty() && remove.is_empty() {
+        return;
+    }
+    thread::spawn(move || {
+        let Some(target) = target() else {
+            return;
+        };
+        let mut acked = Vec::new();
+        if !remove.is_empty() {
+            if let Ok(reply) = message(&target, "unshare", &remove, &[], Duration::from_secs(5)) {
+                if reply.op == "kept" {
+                    acked = remove;
+                }
+            }
+        }
+        if !add.is_empty() {
+            let _ = message(&target, "share", &add, &names, Duration::from_secs(5));
+        }
+        if acked.is_empty() {
+            return;
+        }
+        if let Some(world) = world() {
+            if let Ok(mut world) = world.lock() {
+                world.acked_removals.extend(acked);
+            }
+        }
+    });
+}
+
+pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome {
+    use crate::handoff::{Outcome, StayReason, WantResult};
+
+    let addresses: Vec<String> = addresses
+        .iter()
+        .map(|address| wire::canon(address))
+        .filter(|address| !address.is_empty())
+        .collect();
+    if addresses.is_empty() {
+        return Outcome::Stayed(StayReason::NothingThere);
+    }
+    let Some(_guard) = begin_move() else {
+        return Outcome::Stayed(StayReason::Busy);
+    };
+    let Some(world) = world() else {
+        return Outcome::Stayed(StayReason::PeerUnreachable);
+    };
+    let Ok(identity) = world.lock().map(|world| world.identity.clone()) else {
+        return Outcome::Stayed(StayReason::PeerUnreachable);
+    };
+    let _ = message(&target, "share", &addresses, &[], Duration::from_secs(5));
+    let id = wire::new_id();
+    let body = Body {
+        op: "want".to_string(),
+        id: id.clone(),
+        exp: wire::now_secs().saturating_add(30),
+        addresses: addresses.clone(),
+        names: Vec::new(),
+    };
+    let mut stream = match connect_host(&target.host, target.port) {
+        Ok(stream) => stream,
+        Err(_) => return Outcome::Stayed(StayReason::PeerUnreachable),
+    };
+    nosigpipe(&stream);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    if wire::write_frame(&mut stream, &wire::seal(&identity, &body)).is_err() {
+        return Outcome::Stayed(StayReason::PeerUnreachable);
+    }
+    let Ok(reply_bytes) = wire::read_frame(&mut stream) else {
+        return Outcome::Stayed(StayReason::PeerUnreachable);
+    };
+    let Some((key, reply)) = wire::unseal(&reply_bytes) else {
+        return Outcome::Stayed(StayReason::PeerUnreachable);
+    };
+    if key != target.key || reply.id != id {
+        return Outcome::Stayed(StayReason::PeerUnreachable);
+    }
+    match crate::handoff::after_want(Some(reply.op.as_str())) {
+        WantResult::Stay(reason) => Outcome::Stayed(reason),
+        WantResult::Local => {
+            if crate::bluetooth::connect_all(&addresses) {
+                Outcome::Moved(addresses)
+            } else {
+                Outcome::Stayed(StayReason::NothingThere)
+            }
+        }
+        WantResult::Connect => {
+            let got: Vec<String> = reply
+                .addresses
+                .iter()
+                .map(|address| wire::canon(address))
+                .filter(|address| !address.is_empty())
+                .collect();
+            let got = if got.is_empty() {
+                addresses.clone()
+            } else {
+                got
+            };
+            let ok = crate::bluetooth::connect_all(&got);
+            let ack = Body {
+                op: if ok { "took" } else { "failed" }.to_string(),
+                id,
+                exp: reply.exp,
+                addresses: Vec::new(),
+                names: Vec::new(),
+            };
+            let _ = wire::write_frame(&mut stream, &wire::seal(&identity, &ack));
+            let rest: Vec<String> = addresses
+                .into_iter()
+                .filter(|address| !got.contains(address))
+                .collect();
+            if !rest.is_empty() {
+                let _ = crate::bluetooth::connect_all(&rest);
+            }
+            if ok {
+                Outcome::Moved(got)
+            } else {
+                Outcome::Stayed(StayReason::StayedThere)
+            }
+        }
+    }
+}
+
 pub fn exchange(
     target: &Target,
     op: &str,
     addresses: &[String],
+    timeout: Duration,
+) -> Result<Body, String> {
+    message(target, op, addresses, &[], timeout)
+}
+
+fn message(
+    target: &Target,
+    op: &str,
+    addresses: &[String],
+    names: &[String],
     timeout: Duration,
 ) -> Result<Body, String> {
     let world = world().ok_or_else(|| "Hop is not listening.".to_string())?;
@@ -301,6 +520,7 @@ pub fn exchange(
         id: id.clone(),
         exp: wire::now_secs().saturating_add(20),
         addresses: addresses.to_vec(),
+        names: names.to_vec(),
     };
     let mut stream = connect_host(&target.host, target.port)?;
     nosigpipe(&stream);
@@ -343,6 +563,24 @@ fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
         let decision = wire::reply(&body.op, allowed, fresh, &world.paired, &body.addresses);
         (world.identity.clone(), decision)
     };
+    if matches!(decision, Reply::Message("kept")) {
+        record_list(&world, &body);
+    }
+    if matches!(decision, Reply::Give) {
+        let (shared, pending) = world
+            .lock()
+            .map(|world| {
+                let pending = world
+                    .incoming_add
+                    .iter()
+                    .map(|(address, _)| address.clone())
+                    .collect();
+                (world.shared.clone(), pending)
+            })
+            .unwrap_or_else(|_| (HashSet::new(), HashSet::new()));
+        give_devices(&mut stream, &identity, &key, &body, &shared, &pending);
+        return;
+    }
     let op = match decision {
         Reply::Message(op) => op,
         Reply::Connect => {
@@ -352,14 +590,115 @@ fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
                 "failed"
             }
         }
+        Reply::Give => return,
     };
     let reply = Body {
         op: op.to_string(),
         id: body.id,
         exp: body.exp,
         addresses: Vec::new(),
+        names: Vec::new(),
     };
     let _ = wire::write_frame(&mut stream, &wire::seal(&identity, &reply));
+}
+
+fn record_list(world: &Arc<Mutex<World>>, body: &Body) {
+    let Ok(mut world) = world.lock() else {
+        return;
+    };
+    match body.op.as_str() {
+        "share" => {
+            for (index, address) in body.addresses.iter().enumerate() {
+                let address = wire::canon(address);
+                if address.is_empty() {
+                    continue;
+                }
+                let name = body
+                    .names
+                    .get(index)
+                    .map(|name| name.trim().to_string())
+                    .unwrap_or_default();
+                world.incoming_add.push((address, name));
+            }
+        }
+        "unshare" => {
+            for address in &body.addresses {
+                let address = wire::canon(address);
+                if !address.is_empty() {
+                    world.incoming_remove.push(address);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn give_devices(
+    stream: &mut TcpStream,
+    identity: &Identity,
+    key: &[u8; 32],
+    body: &Body,
+    shared: &HashSet<String>,
+    pending: &HashSet<String>,
+) {
+    let wanted: Vec<String> = body
+        .addresses
+        .iter()
+        .map(|address| wire::canon(address))
+        .filter(|address| {
+            !address.is_empty() && (shared.contains(address) || pending.contains(address))
+        })
+        .collect();
+    let held = crate::bluetooth::connected_ones(&wanted);
+    if held.is_empty() {
+        let _ = write_reply(stream, identity, "absent", &body.id, body.exp, &[]);
+        return;
+    }
+    let Some(_guard) = begin_move() else {
+        let _ = write_reply(stream, identity, "busy", &body.id, body.exp, &[]);
+        return;
+    };
+    if !crate::bluetooth::release_all(&held) {
+        let _ = crate::bluetooth::connect_all(&held);
+        let _ = write_reply(stream, identity, "still", &body.id, body.exp, &[]);
+        return;
+    }
+    if write_reply(stream, identity, "released", &body.id, body.exp, &held).is_err() {
+        let _ = crate::bluetooth::connect_all(&held);
+        return;
+    }
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(70)));
+    if !read_took(stream, key, &body.id) {
+        let _ = crate::bluetooth::connect_all(&held);
+    }
+}
+
+fn write_reply(
+    stream: &mut TcpStream,
+    identity: &Identity,
+    op: &str,
+    id: &str,
+    exp: u64,
+    addresses: &[String],
+) -> io::Result<()> {
+    let reply = Body {
+        op: op.to_string(),
+        id: id.to_string(),
+        exp,
+        addresses: addresses.to_vec(),
+        names: Vec::new(),
+    };
+    wire::write_frame(stream, &wire::seal(identity, &reply))
+}
+
+fn read_took(stream: &mut TcpStream, key: &[u8; 32], id: &str) -> bool {
+    let Ok(bytes) = wire::read_frame(stream) else {
+        return false;
+    };
+    let Some((reply_key, reply)) = wire::unseal(&bytes) else {
+        return false;
+    };
+    reply_key == *key && reply.id == id && reply.op == "took"
 }
 
 impl World {
