@@ -29,7 +29,7 @@ A move asks the Mac that has the device before anything disconnects. If the othe
 
 ## Tests
 
-`cargo test` covers the move: a Mac that does not answer disconnects nothing, and a failed take connects the device again here. A second move is ignored while one is already running.
+`cargo test` covers the move: a Mac that does not answer disconnects nothing, and a failed take connects the device again here.
 
 These need two Macs, so they are manual:
 
@@ -41,10 +41,6 @@ These need two Macs, so they are manual:
 - Start a move, then try to move another device before it finishes
 
 The menu should keep saying **Moving…** until the other Mac has the device. If the move fails, the device should still be usable on the Mac that had it.
-
-## Idle
-
-Measured on an Apple silicon Mac, menu closed, for one minute. Before this change: mostly 0–0.2% CPU, spikes under 10%, about 70–81 MB. After Bluetooth is read every 8 seconds while idle: mostly 0–0.3% CPU, a few spikes (one sample at 14%), memory settled near 70–80 MB. The process was running about 0.1 seconds after launch. The 250ms timer checks the menu and a move in progress. Bluetooth is read every second while a move is running.
 
 ## Release signing
 

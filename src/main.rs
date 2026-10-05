@@ -169,9 +169,6 @@ impl Hop {
         self.note_peer();
         self.publish_status();
         self.sync_menu();
-        // 250ms is only for a menu click and for noticing that a move finished.
-        // Bluetooth is read on a slower clock. The other Mac is found on the
-        // link thread, which waits on Bonjour instead of this timer.
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -253,9 +250,6 @@ impl Hop {
         }
     }
 
-    /// While a move is running, and for a few seconds after it finishes, read
-    /// Bluetooth every second. Otherwise every 8 seconds is enough: this is a
-    /// paired-device list, not a scan, and the menu does not need it sooner.
     fn bluetooth_due(&self) -> bool {
         let fast = matches!(self.phase, Phase::Sending { .. })
             || self.watch_until.is_some_and(|until| Instant::now() < until);

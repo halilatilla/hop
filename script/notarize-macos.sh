@@ -1,7 +1,5 @@
 #!/bin/sh
-# Notarize dist/Hop.app when a Developer ID certificate is available.
-# With no certificate in the environment, this leaves the ad-hoc signature in place.
-# Do not commit the certificate or the app-specific password.
+# Notarize dist/Hop.app when Developer ID secrets are set. Otherwise leave the current signature.
 set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 app="${1:-$root/dist/Hop.app}"
