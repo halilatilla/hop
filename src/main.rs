@@ -120,6 +120,9 @@ struct Hop {
     flight: Option<JoinHandle<handoff::Outcome>>,
     status_label: String,
     ticks: u32,
+    watch_until: Option<Instant>,
+    published_paired: Option<HashSet<String>>,
+    published_shared: Option<HashSet<String>>,
     theme: Option<Subscription>,
 }
 
@@ -152,6 +155,9 @@ impl Hop {
             flight: None,
             status_label: String::new(),
             ticks: 0,
+            watch_until: None,
+            published_paired: None,
+            published_shared: None,
             theme: None,
         }
     }
@@ -159,9 +165,13 @@ impl Hop {
     fn start(&mut self, cx: &mut Context<Self>) {
         link::start();
         self.refresh(cx);
+        self.publish_link_sets();
         self.note_peer();
         self.publish_status();
         self.sync_menu();
+        // 250ms is only for a menu click and for noticing that a move finished.
+        // Bluetooth is read on a slower clock. The other Mac is found on the
+        // link thread, which waits on Bonjour instead of this timer.
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -178,14 +188,11 @@ impl Hop {
     fn on_tick(&mut self, cx: &mut Context<Self>) {
         self.ticks = self.ticks.wrapping_add(1);
         self.absorb_peer(cx);
-        link::set_shared(self.choice.addresses.clone());
-        link::set_paired(
-            self.devices
-                .iter()
-                .map(|device| device.address.clone())
-                .collect(),
-        );
         self.drive_send(cx);
+        if self.bluetooth_due() {
+            self.refresh(cx);
+        }
+        self.publish_link_sets();
         let seen = link::seen();
         let allows = link::pending();
         let became_ready =
@@ -203,9 +210,6 @@ impl Hop {
             self.publish_status();
             self.sync_menu();
             cx.notify();
-        }
-        if self.ticks.is_multiple_of(8) {
-            self.refresh(cx);
         }
         let hop = cx.entity();
         for command in menu_bar::poll() {
@@ -246,6 +250,35 @@ impl Hop {
             self.publish_status();
             self.sync_menu();
             cx.notify();
+        }
+    }
+
+    /// While a move is running, and for a few seconds after it finishes, read
+    /// Bluetooth every second. Otherwise every 8 seconds is enough: this is a
+    /// paired-device list, not a scan, and the menu does not need it sooner.
+    fn bluetooth_due(&self) -> bool {
+        let fast = matches!(self.phase, Phase::Sending { .. })
+            || self.watch_until.is_some_and(|until| Instant::now() < until);
+        if fast {
+            self.ticks.is_multiple_of(4)
+        } else {
+            self.ticks.is_multiple_of(32)
+        }
+    }
+
+    fn publish_link_sets(&mut self) {
+        let paired: HashSet<String> = self
+            .devices
+            .iter()
+            .map(|device| device.address.clone())
+            .collect();
+        if self.published_paired.as_ref() != Some(&paired) {
+            self.published_paired = Some(paired.clone());
+            link::set_paired(paired);
+        }
+        if self.published_shared.as_ref() != Some(&self.choice.addresses) {
+            self.published_shared = Some(self.choice.addresses.clone());
+            link::set_shared(self.choice.addresses.clone());
         }
     }
 
@@ -340,6 +373,8 @@ impl Hop {
             }
         });
         self.phase = Phase::Idle;
+        self.watch_until = Some(Instant::now() + Duration::from_secs(10));
+        self.refresh(cx);
         self.publish_status();
         self.sync_menu();
         self.report(outcome.unwrap_or(handoff::Outcome::Stayed(
@@ -531,7 +566,7 @@ impl Hop {
                 .get(&address)
                 .cloned()
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| "Shared device".to_string());
+                .unwrap_or_else(|| "Bluetooth device".to_string());
             rows.push(menu_bar::MenuDevice {
                 address: address.clone(),
                 name,
@@ -557,7 +592,7 @@ impl Hop {
                     .filter(|name| !name.is_empty())
                     .or_else(|| self.choice.names.get(&address).cloned())
                     .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| "Shared device".to_string());
+                    .unwrap_or_else(|| "Bluetooth device".to_string());
                 let place = if connected {
                     link::this_mac()
                 } else {
@@ -755,7 +790,7 @@ impl Render for Hop {
             || !shared.is_empty()
             || !mine.is_empty()
         {
-            list = list.child(section_label("Shared", colors));
+            list = list.child(section_label("Can move", colors));
             if shared.is_empty() {
                 list = list.child(note(
                     "Nothing can move yet. On this Mac, let the other Mac move a device.",

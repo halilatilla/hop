@@ -371,7 +371,7 @@ fn add_label(
     symbol: &str,
     subtitle: &str,
     checked: bool,
-) {
+) -> *mut objc::runtime::Object {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
 
@@ -391,6 +391,7 @@ fn add_label(
         }
         let _: () = msg_send![item, setEnabled: false];
         let _: () = msg_send![menu, addItem: item];
+        item
     }
 }
 
@@ -409,6 +410,32 @@ fn set_subtitle(item: *mut objc::runtime::Object, subtitle: &str) -> bool {
         }
         available
     }
+}
+
+#[cfg(target_os = "macos")]
+fn set_access_label(item: *mut objc::runtime::Object, text: &str) {
+    use objc::{msg_send, sel, sel_impl};
+
+    if text.is_empty() {
+        return;
+    }
+    unsafe {
+        let selector = sel!(setAccessibilityLabel:);
+        let available: bool = msg_send![item, respondsToSelector: selector];
+        if available {
+            let _: () = msg_send![item, setAccessibilityLabel: ns_string(text)];
+        }
+    }
+}
+
+fn shown_name(name: &str) -> String {
+    const LIMIT: usize = 32;
+    if name.chars().count() <= LIMIT {
+        return name.to_string();
+    }
+    let mut short: String = name.chars().take(LIMIT - 1).collect();
+    short.push('…');
+    short
 }
 
 #[cfg(target_os = "macos")]
@@ -529,13 +556,14 @@ fn set_devices_mac(
             add_separator(menu);
         }
         for (index, device) in local.iter().enumerate() {
-            add_label(
+            let item = add_label(
                 menu,
-                &device.name,
+                &shown_name(&device.name),
                 symbol_name(&device.kind),
                 "Connected here",
                 true,
             );
+            set_access_label(item, &device.name);
             if !move_target.is_empty() {
                 let item = add_item(
                     menu,
@@ -554,12 +582,23 @@ fn set_devices_mac(
         for (index, device) in devices.iter().enumerate() {
             let symbol = symbol_name(&device.kind);
             if device.busy {
-                add_label(menu, &device.name, symbol, "Moving…", false);
+                let item = add_label(menu, &shown_name(&device.name), symbol, "Moving…", false);
+                set_access_label(item, &device.name);
             } else if device.connected {
-                let item = add_item(menu, target, &device.name, "", DEVICE_TAG + index as isize);
+                let item = add_item(
+                    menu,
+                    target,
+                    &shown_name(&device.name),
+                    "",
+                    DEVICE_TAG + index as isize,
+                );
                 set_symbol(item, symbol);
+                set_access_label(item, &device.name);
                 if !set_subtitle(item, "Connected here") {
-                    let _: () = msg_send![item, setTitle: ns_string(&shown_title(&device.name, "Connected here"))];
+                    let _: () = msg_send![
+                        item,
+                        setTitle: ns_string(&shown_title(&shown_name(&device.name), "Connected here"))
+                    ];
                 }
                 // NSControlStateValueOn
                 let _: () = msg_send![item, setState: 1isize];
@@ -578,7 +617,8 @@ fn set_devices_mac(
                 } else {
                     format!("Connected to {move_target}")
                 };
-                add_label(menu, &device.name, symbol, &place, false);
+                let item = add_label(menu, &shown_name(&device.name), symbol, &place, false);
+                set_access_label(item, &device.name);
                 if !move_target.is_empty() && !moving {
                     add_item(menu, target, "Move here", "", DEVICE_TAG + index as isize);
                 }
@@ -678,4 +718,18 @@ fn ns_string(text: &str) -> *mut objc::runtime::Object {
 
     let c = CString::new(text).unwrap_or_else(|_| CString::new("Hop").expect("fallback"));
     unsafe { msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()] }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shown_name;
+
+    #[test]
+    fn a_long_device_name_is_shortened_without_losing_the_start() {
+        assert_eq!(shown_name("AirPods Pro"), "AirPods Pro");
+        assert_eq!(
+            shown_name("My Very Long Bluetooth Keyboard Name"),
+            "My Very Long Bluetooth Keyboard…"
+        );
+    }
 }

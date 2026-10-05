@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+Idle Bluetooth reads are every 8 seconds. A move still checks every second, and the menu updates when the move finishes. Long device names stay on one line. The README matches the menu.
+
 ## 0.1.17
 
 The menu says where a device is connected, and **Move here** is the action. A move stays on **Moving…** until the other Mac has the device.

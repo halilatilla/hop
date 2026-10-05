@@ -5,16 +5,26 @@
 <h1 align="center">Hop</h1>
 
 <p align="center">
-  Move a keyboard, mouse, or headphones from one Mac to the other.
+  Move your Bluetooth devices between Macs.<br>
+  Stop disconnecting and reconnecting your keyboard, mouse, and AirPods manually.
 </p>
 
 <p align="center">
-  <img src="docs/menu-bar.png" width="269" alt="The Hop menu, with a shared keyboard and mouse">
+  <img src="docs/menu-bar.png" width="269" alt="The Hop menu in the menu bar">
 </p>
 
 Hop sits in the menu bar. Your devices stay paired to both Macs. Hop only moves which Mac they are connected to.
 
 The two Macs already know each other. Same Apple Account, same network, devices already paired in Bluetooth. Hop does not introduce them.
+
+```text
+Mac A                         Mac B
+  Hop ←—— local network ——→ Hop
+   │                         │
+Bluetooth                 Bluetooth
+```
+
+A move asks the Mac that has the device before anything disconnects. If the other Mac does not take it, Hop connects it again on the Mac that had it. The messages between the Macs are signed. Nothing is sent to a server.
 
 ## Install
 
