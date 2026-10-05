@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+A move that cannot reach the other Mac no longer says Hop isn't running unless that Mac is actually gone. If Bluetooth cannot be read, the menu says so instead of looking empty.
+
 ## 0.2.0
 
 Idle Bluetooth reads are every 8 seconds. A move still checks every second, and the menu updates when the move finishes. Long device names stay on one line.
