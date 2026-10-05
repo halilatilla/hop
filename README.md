@@ -5,12 +5,8 @@
 <h1 align="center">Hop</h1>
 
 <p align="center">
-  Move your Bluetooth devices between Macs.<br>
+  Move Bluetooth devices between two Macs from the menu bar.<br>
   Stop disconnecting and reconnecting your keyboard, mouse, and AirPods manually.
-</p>
-
-<p align="center">
-  <img src="docs/menu-bar.png" width="269" alt="The Hop menu in the menu bar">
 </p>
 
 Hop sits in the menu bar. Your devices stay paired to both Macs. Hop only moves which Mac they are connected to.
@@ -30,9 +26,9 @@ A move asks the Mac that has the device before anything disconnects. If the othe
 
 Apple silicon, macOS 11 or later. Use the same version on both Macs.
 
-1. Download the latest zip from [Releases](https://github.com/halilatilla/hop/releases).
+1. Download `Hop-<version>-macos-arm64.zip` from [Releases](https://github.com/halilatilla/hop/releases).
 2. Unzip it and move Hop into Applications.
-3. Open Hop. If macOS says it could not verify the app, go to **System Settings → Privacy & Security** and click **Open Anyway**.
+3. Open Hop. The current builds are ad-hoc signed, not notarized. macOS says it could not verify the app. Go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
 If that button is not there, run this in Terminal, then open Hop:
 
@@ -60,7 +56,7 @@ While it moves, the row says **Moving…**. The menu bar says **Moving**. It doe
 
 **Keep on this Mac**, inside the checkmark’s row, leaves the device connected here and takes it off the list the other Mac can move.
 
-**Other Mac** is the other computer’s name. When Hop is not open there, the line says **Hop isn't running**.
+**Other Mac** is the other computer’s name. When Hop is not open there, the line says **Hop isn't running**. A device that Mac was using says **Unavailable**.
 
 The menu bar icon stays quiet. It reads **Allow** while a new Mac is waiting.
 
@@ -76,12 +72,17 @@ The other Mac needs to be awake, on the same network, and running Hop.
 
 ```sh
 xcode-select --install
+cargo fmt --check
+cargo check
+cargo test
 cargo run --release
 ```
 
 The first build compiles GPUI from the Zed repository. This repo does not fork Zed.
 
 Hop keeps the shared list in `~/Library/Application Support/Hop`. Set `HOP_CONFIG_DIR` to use another folder.
+
+`docs/menu-bar.png` is an older menu. It still says **Share**, **Shared**, and **Not running Hop**.
 
 ## Privacy
 
