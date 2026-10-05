@@ -11,7 +11,7 @@
 
 Hop sits in the menu bar. Your devices stay paired to both Macs. Hop only moves which Mac they are connected to.
 
-Both Macs need to be on the same local network. Pair each device in Bluetooth on both Macs.
+Open Hop on both Macs. They need the same local network, and each device paired in Bluetooth on both. macOS asks for Bluetooth and local network access.
 
 A current menu capture is not in the repo yet. It should show **Connected here** and **Move here**.
 
@@ -22,7 +22,7 @@ Mac A                         Mac B
 Bluetooth                 Bluetooth
 ```
 
-A move asks the Mac that has the device before anything disconnects. If the other Mac does not take it, Hop connects it again on the Mac that had it. The messages between the Macs are signed. Nothing is sent to a server.
+A move asks the Mac that has the device before anything disconnects. If the other Mac does not take it, Hop puts the device back on the Mac that had it.
 
 ## Install
 
@@ -52,11 +52,13 @@ macOS will ask for Bluetooth access, and for the local network when the two Macs
 
 A checkmark means **Connected here**.
 
-On the Mac that has the device, choose **Let** the other Mac **move it**. On the other Mac, the row says who it is **Connected to**. Choose **Move here**.
+On that Mac, choose **Let** the other Mac **move it**. On the other Mac, the row says **Connected to** the Mac that has it. Choose **Move here**.
 
-While it moves, the row says **Moving…**. The menu bar says **Moving**. It does not say the device has moved until the other Mac actually has it.
+The row says **Moving…** until that Mac has the device. The menu bar says **Moving**.
 
-**Keep on this Mac**, inside the checkmark’s row, leaves the device connected here and takes it off the list the other Mac can move.
+If the other Mac does not take it, the device stays where it was. If it already left, Hop puts it back.
+
+**Keep on this Mac**, inside the checkmark’s row, leaves the device connected here.
 
 **Other Mac** is the other computer’s name. When Hop is not open there, the line says **Hop isn't running**. A device that Mac was using says **Unavailable**.
 
