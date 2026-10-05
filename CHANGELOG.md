@@ -2,7 +2,7 @@
 
 ## 0.2.0
 
-Idle Bluetooth reads are every 8 seconds. A move still checks every second, and the menu updates when the move finishes. Long device names stay on one line. The README matches the menu.
+Idle Bluetooth reads are every 8 seconds. A move still checks every second, and the menu updates when the move finishes. Long device names stay on one line.
 
 ## 0.1.17
 

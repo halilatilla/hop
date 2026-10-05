@@ -10,6 +10,8 @@ Hop is a menu bar app for two Macs. Small changes that keep a move reliable are 
 
 ```sh
 xcode-select --install
+cargo fmt --check
+cargo check
 cargo test
 cargo run --release
 ```
