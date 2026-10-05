@@ -11,7 +11,9 @@
 
 Hop sits in the menu bar. Your devices stay paired to both Macs. Hop only moves which Mac they are connected to.
 
-The two Macs already know each other. Same Apple Account, same network, devices already paired in Bluetooth. Hop does not introduce them.
+Both Macs need to be on the same local network. Pair each device in Bluetooth on both Macs.
+
+A current menu capture is not in the repo yet. It should show **Connected here** and **Move here**.
 
 ```text
 Mac A                         Mac B
@@ -62,7 +64,7 @@ The menu bar icon stays quiet. It reads **Allow** while a new Mac is waiting.
 
 ## If a move does not finish
 
-Hop asks the other Mac before anything disconnects. If that Mac does not answer, the device stays where it is. If it does leave and the other Mac does not connect it, Hop puts it back.
+Hop asks the other Mac before anything disconnects. If that Mac does not answer, the device stays where it is. If it does leave and the other Mac does not take it, Hop puts it back.
 
 The other Mac needs to be awake, on the same network, and running Hop.
 
@@ -81,8 +83,6 @@ cargo run --release
 The first build compiles GPUI from the Zed repository. This repo does not fork Zed.
 
 Hop keeps the shared list in `~/Library/Application Support/Hop`. Set `HOP_CONFIG_DIR` to use another folder.
-
-`docs/menu-bar.png` is an older menu. It still says **Share**, **Shared**, and **Not running Hop**.
 
 ## Privacy
 
