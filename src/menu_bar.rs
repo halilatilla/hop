@@ -10,6 +10,7 @@ pub enum MenuCommand {
     Share(String),
     Remove(String),
     Allow(String),
+    Forget(String),
     Quit,
 }
 
@@ -36,9 +37,11 @@ const DEVICE_TAG: isize = 100;
 const ALLOW_TAG: isize = 1000;
 const REMOVE_TAG: isize = 2000;
 const SHARE_TAG: isize = 3000;
+const FORGET_TAG: isize = 4000;
 
 static PENDING: Mutex<Vec<MenuCommand>> = Mutex::new(Vec::new());
 static ALLOWS: Mutex<Vec<MenuAllow>> = Mutex::new(Vec::new());
+static FORGET: Mutex<String> = Mutex::new(String::new());
 
 pub fn poll() -> Vec<MenuCommand> {
     PENDING
@@ -74,6 +77,7 @@ pub fn set_devices(
     move_target: &str,
     notice: &str,
     bluetooth_error: &str,
+    forget_id: &str,
 ) {
     #[cfg(target_os = "macos")]
     set_devices_mac(
@@ -84,6 +88,7 @@ pub fn set_devices(
         move_target,
         notice,
         bluetooth_error,
+        forget_id,
     );
     #[cfg(not(target_os = "macos"))]
     {
@@ -94,6 +99,7 @@ pub fn set_devices(
         let _ = move_target;
         let _ = notice;
         let _ = bluetooth_error;
+        let _ = forget_id;
     }
 }
 
@@ -166,6 +172,21 @@ fn install_mac() {
         let tag: isize = unsafe { msg_send![sender, tag] };
         if tag == ABOUT {
             show_about();
+            return;
+        }
+        if tag == FORGET_TAG {
+            if !confirm_forget() {
+                return;
+            }
+            let Ok(id) = FORGET.lock() else {
+                return;
+            };
+            if id.is_empty() {
+                return;
+            }
+            if let Ok(mut pending) = PENDING.lock() {
+                pending.push(MenuCommand::Forget(id.clone()));
+            }
             return;
         }
         let command = match tag {
@@ -531,10 +552,14 @@ fn set_devices_mac(
     move_target: &str,
     notice: &str,
     bluetooth_error: &str,
+    forget_id: &str,
 ) {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
 
+    if let Ok(mut saved) = FORGET.lock() {
+        *saved = forget_id.to_string();
+    }
     let (devices, local, bluetooth_error) = shown_devices(devices, local, bluetooth_error);
     if let Ok(mut rows) = ROWS.lock() {
         *rows = devices.clone();
@@ -561,6 +586,9 @@ fn set_devices_mac(
         if !peer_line.is_empty() {
             add_peer(menu, peer_line);
         }
+        if !forget_id.is_empty() {
+            add_item(menu, target, "Forget this Mac", "", FORGET_TAG);
+        }
         for (index, allow) in allows.iter().enumerate() {
             let item = add_item(
                 menu,
@@ -574,7 +602,10 @@ fn set_devices_mac(
         if !notice.is_empty() {
             add_label(menu, notice, "", "", false);
         }
-        if (!peer_line.is_empty() || !allows.is_empty() || !notice.is_empty())
+        if (!peer_line.is_empty()
+            || !allows.is_empty()
+            || !notice.is_empty()
+            || !forget_id.is_empty())
             && (!bluetooth_error.is_empty() || !local.is_empty() || !devices.is_empty())
         {
             add_separator(menu);
@@ -654,6 +685,28 @@ fn set_devices_mac(
         add_separator(menu);
         add_item(menu, target, "About Hop", "", ABOUT);
         add_item(menu, target, "Quit Hop", "q", QUIT);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn confirm_forget() -> bool {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let alert: *mut Object = msg_send![class!(NSAlert), new];
+        if alert.is_null() {
+            return false;
+        }
+        let _: () = msg_send![alert, setMessageText: ns_string("Forget this Mac?")];
+        let _: () = msg_send![alert, setInformativeText: ns_string(
+            "Hop will remove this Mac from your trusted peers. You can pair again later by comparing the codes."
+        )];
+        let _: () = msg_send![alert, addButtonWithTitle: ns_string("Cancel")];
+        let _: () = msg_send![alert, addButtonWithTitle: ns_string("Forget")];
+        let response: isize = msg_send![alert, runModal];
+        let _: () = msg_send![alert, release];
+        response == 1001
     }
 }
 

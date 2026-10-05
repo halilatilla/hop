@@ -20,7 +20,7 @@ Pair each device once in **System Settings → Bluetooth**, on both Macs. Hop do
 
 ## Install
 
-1. Download `Hop-<version>-macos-arm64.zip` from [Releases](https://github.com/halilatilla/hop/releases). The current file is [Hop-0.2.1-macos-arm64.zip](https://github.com/halilatilla/hop/releases/download/v0.2.1/Hop-0.2.1-macos-arm64.zip).
+1. Download `Hop-<version>-macos-arm64.zip` from [Releases](https://github.com/halilatilla/hop/releases). The current file is [Hop-0.2.2-macos-arm64.zip](https://github.com/halilatilla/hop/releases/download/v0.2.2/Hop-0.2.2-macos-arm64.zip).
 2. Unzip it and move Hop into Applications. Replace the copy that is already there.
 3. Open Hop. This build is ad-hoc signed, not notarized, so macOS says it could not verify the app. Click Done, then open **System Settings → Privacy & Security** and click **Open Anyway**.
 
@@ -42,6 +42,8 @@ Quit the old Hop from its menu bar before opening the new one. There is no autom
 6. Hop remembers that Mac. The two Macs can then move devices.
 
 The menu bar reads **Allow** until this is done. Choosing **Codes match** only trusts that Mac on this one. Do it on both Macs.
+
+**Forget this Mac**, under that Mac’s name, removes the trust on this computer. Compare the codes again before the next move.
 
 ## Move a device
 

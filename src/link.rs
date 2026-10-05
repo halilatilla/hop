@@ -243,17 +243,46 @@ pub fn allow(id: &str) {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Mac".to_string());
     world.allowed.insert(key, name);
-    let peers: Vec<SavedPeer> = world
-        .allowed
-        .iter()
-        .map(|(key, name)| SavedPeer {
-            key: wire::hex(key),
-            name: name.clone(),
-        })
-        .collect();
+    let peers = saved_from(&world.allowed);
     if let Err(err) = save_peers(&peers_path(), &peers) {
         eprintln!("hop: could not save the allowed Mac ({err})");
     }
+}
+
+const FORGET_FAILED: &str = "Hop could not forget this Mac.";
+
+pub fn forgettable() -> Option<String> {
+    let world = world()?;
+    let world = world.lock().ok()?;
+    let self_key = world.identity.public_key();
+    let mut resolved = Vec::new();
+    for sight in &world.sights {
+        let Some(key) = sight.key else {
+            continue;
+        };
+        if !sight.resolved || key == self_key || !world.allowed.contains_key(&key) {
+            continue;
+        }
+        resolved.push(key);
+    }
+    let key = if resolved.len() == 1 {
+        resolved[0]
+    } else if resolved.is_empty() && world.allowed.len() == 1 {
+        *world.allowed.keys().next()?
+    } else {
+        return None;
+    };
+    Some(wire::hex(&key))
+}
+
+pub fn forget(id: &str) -> Result<(), &'static str> {
+    let Some(world) = world() else {
+        return Err(FORGET_FAILED);
+    };
+    let Ok(mut world) = world.lock() else {
+        return Err(FORGET_FAILED);
+    };
+    revoke(&peers_path(), &mut world.allowed, id)
 }
 
 pub fn set_paired(addresses: HashSet<String>) {
@@ -746,6 +775,42 @@ fn load_peers(path: &Path) -> HashMap<[u8; 32], String> {
         .into_iter()
         .filter_map(|peer| Some((wire::parse_key(&peer.key)?, peer.name)))
         .collect()
+}
+
+fn saved_from(allowed: &HashMap<[u8; 32], String>) -> Vec<SavedPeer> {
+    allowed
+        .iter()
+        .map(|(key, name)| SavedPeer {
+            key: wire::hex(key),
+            name: name.clone(),
+        })
+        .collect()
+}
+
+fn revoke(
+    path: &Path,
+    allowed: &mut HashMap<[u8; 32], String>,
+    id: &str,
+) -> Result<(), &'static str> {
+    let Some(key) = wire::parse_key(id) else {
+        return Err(FORGET_FAILED);
+    };
+    if !allowed.contains_key(&key) {
+        return Err(FORGET_FAILED);
+    }
+    let peers: Vec<SavedPeer> = allowed
+        .iter()
+        .filter(|(saved, _)| **saved != key)
+        .map(|(saved, name)| SavedPeer {
+            key: wire::hex(saved),
+            name: name.clone(),
+        })
+        .collect();
+    if save_peers(path, &peers).is_err() {
+        return Err(FORGET_FAILED);
+    }
+    allowed.remove(&key);
+    Ok(())
 }
 
 fn save_peers(path: &Path, peers: &[SavedPeer]) -> io::Result<()> {
@@ -1280,11 +1345,15 @@ fn computer_name() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::fs;
     use std::io::{ErrorKind, Write};
     use std::net::TcpStream;
+    use std::path::PathBuf;
     use std::time::Duration;
 
-    use super::accepted;
+    use super::{accepted, load_peers, revoke, save_peers, saved_from};
+    use crate::wire::{self, Identity};
 
     #[test]
     fn a_socket_from_the_listener_waits_for_the_rest_of_a_frame() {
@@ -1315,5 +1384,97 @@ mod tests {
             started.elapsed() >= Duration::from_millis(300),
             "the listener closed before the frame arrived: {result:?}"
         );
+    }
+
+    fn scratch() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "hop-forget-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn key(byte: u8) -> [u8; 32] {
+        let mut key = [0u8; 32];
+        key[31] = byte;
+        key
+    }
+
+    #[test]
+    fn a_trusted_peer_is_removed_without_the_other() {
+        let dir = scratch();
+        let path = dir.join("peers.json");
+        let mac_b = key(1);
+        let mac_c = key(2);
+        let mut allowed =
+            HashMap::from([(mac_b, "Mac B".to_string()), (mac_c, "Mac C".to_string())]);
+        save_peers(&path, &saved_from(&allowed)).unwrap();
+        revoke(&path, &mut allowed, &wire::hex(&mac_b)).unwrap();
+        assert!(!allowed.contains_key(&mac_b));
+        assert_eq!(allowed.get(&mac_c).map(String::as_str), Some("Mac C"));
+        let loaded = load_peers(&path);
+        assert!(!loaded.contains_key(&mac_b));
+        assert_eq!(loaded.get(&mac_c).map(String::as_str), Some("Mac C"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_forget_keeps_the_trusted_peer() {
+        let dir = scratch();
+        let blocked = dir.join("blocked");
+        fs::write(&blocked, b"x").unwrap();
+        let mac_b = key(1);
+        let mut allowed = HashMap::from([(mac_b, "Mac B".to_string())]);
+        let err = revoke(
+            &blocked.join("peers.json"),
+            &mut allowed,
+            &wire::hex(&mac_b),
+        );
+        assert!(err.is_err());
+        assert_eq!(allowed.get(&mac_b).map(String::as_str), Some("Mac B"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn forgetting_a_peer_leaves_the_local_identity() {
+        let dir = scratch();
+        let identity_path = dir.join("identity.json");
+        let identity = Identity::load_or_create(&identity_path);
+        let before = fs::read(&identity_path).unwrap();
+        let public = identity.public_key();
+        let mac_b = key(4);
+        let mut allowed = HashMap::from([(mac_b, "Mac B".to_string())]);
+        let peers = dir.join("peers.json");
+        save_peers(&peers, &saved_from(&allowed)).unwrap();
+        revoke(&peers, &mut allowed, &wire::hex(&mac_b)).unwrap();
+        assert_eq!(fs::read(&identity_path).unwrap(), before);
+        assert_eq!(
+            Identity::load_or_create(&identity_path).public_key(),
+            public
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_forgotten_peer_can_be_trusted_again() {
+        let dir = scratch();
+        let path = dir.join("peers.json");
+        let mac_b = key(1);
+        let mut allowed = HashMap::from([(mac_b, "Mac B".to_string())]);
+        save_peers(&path, &saved_from(&allowed)).unwrap();
+        revoke(&path, &mut allowed, &wire::hex(&mac_b)).unwrap();
+        assert!(load_peers(&path).is_empty());
+        allowed.insert(mac_b, "Mac B".to_string());
+        save_peers(&path, &saved_from(&allowed)).unwrap();
+        assert_eq!(
+            load_peers(&path).get(&mac_b).map(String::as_str),
+            Some("Mac B")
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 }

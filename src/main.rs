@@ -225,6 +225,19 @@ impl Hop {
                     self.sync_menu();
                     cx.notify();
                 }
+                MenuCommand::Forget(id) => {
+                    if let Err(notice) = link::forget(&id) {
+                        let notice = notice.to_string();
+                        self.notice = Some(notice.clone());
+                        menu_bar::set_tooltip(&notice);
+                    } else {
+                        self.notice = None;
+                    }
+                    self.note_peer();
+                    self.publish_status();
+                    self.sync_menu();
+                    cx.notify();
+                }
                 MenuCommand::Quit => cx.quit(),
             }
         }
@@ -501,6 +514,7 @@ impl Hop {
             &move_target,
             self.notice.as_deref().unwrap_or(""),
             self.list_error.as_deref().unwrap_or(""),
+            &link::forgettable().unwrap_or_default(),
         );
     }
 
