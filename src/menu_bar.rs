@@ -73,9 +73,18 @@ pub fn set_devices(
     peer_line: &str,
     move_target: &str,
     notice: &str,
+    bluetooth_error: &str,
 ) {
     #[cfg(target_os = "macos")]
-    set_devices_mac(devices, local, allows, peer_line, move_target, notice);
+    set_devices_mac(
+        devices,
+        local,
+        allows,
+        peer_line,
+        move_target,
+        notice,
+        bluetooth_error,
+    );
     #[cfg(not(target_os = "macos"))]
     {
         let _ = devices;
@@ -84,6 +93,7 @@ pub fn set_devices(
         let _ = peer_line;
         let _ = move_target;
         let _ = notice;
+        let _ = bluetooth_error;
     }
 }
 
@@ -428,6 +438,18 @@ fn set_access_label(item: *mut objc::runtime::Object, text: &str) {
     }
 }
 
+fn shown_devices<'a>(
+    devices: Vec<MenuDevice>,
+    local: Vec<MenuDevice>,
+    bluetooth_error: &'a str,
+) -> (Vec<MenuDevice>, Vec<MenuDevice>, &'a str) {
+    if bluetooth_error.is_empty() {
+        (devices, local, bluetooth_error)
+    } else {
+        (Vec::new(), Vec::new(), bluetooth_error)
+    }
+}
+
 fn shown_name(name: &str) -> String {
     const LIMIT: usize = 32;
     if name.chars().count() <= LIMIT {
@@ -508,10 +530,12 @@ fn set_devices_mac(
     peer_line: &str,
     move_target: &str,
     notice: &str,
+    bluetooth_error: &str,
 ) {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
 
+    let (devices, local, bluetooth_error) = shown_devices(devices, local, bluetooth_error);
     if let Ok(mut rows) = ROWS.lock() {
         *rows = devices.clone();
     }
@@ -551,9 +575,12 @@ fn set_devices_mac(
             add_label(menu, notice, "", "", false);
         }
         if (!peer_line.is_empty() || !allows.is_empty() || !notice.is_empty())
-            && (!local.is_empty() || !devices.is_empty())
+            && (!bluetooth_error.is_empty() || !local.is_empty() || !devices.is_empty())
         {
             add_separator(menu);
+        }
+        if !bluetooth_error.is_empty() {
+            add_label(menu, bluetooth_error, "", "", false);
         }
         for (index, device) in local.iter().enumerate() {
             let item = add_label(
@@ -722,7 +749,37 @@ fn ns_string(text: &str) -> *mut objc::runtime::Object {
 
 #[cfg(test)]
 mod tests {
-    use super::shown_name;
+    use super::{MenuDevice, shown_devices, shown_name};
+
+    fn mouse() -> MenuDevice {
+        MenuDevice {
+            address: "aa-bb".to_string(),
+            name: "Mouse".to_string(),
+            kind: "Mouse".to_string(),
+            connected: true,
+            busy: false,
+        }
+    }
+
+    #[test]
+    fn a_bluetooth_read_failure_replaces_the_device_list() {
+        assert_eq!(
+            shown_devices(
+                vec![mouse()],
+                vec![mouse()],
+                "Hop could not read Bluetooth."
+            ),
+            (Vec::new(), Vec::new(), "Hop could not read Bluetooth.")
+        );
+        assert_eq!(
+            shown_devices(Vec::new(), Vec::new(), ""),
+            (Vec::new(), Vec::new(), "")
+        );
+        assert_eq!(
+            shown_devices(vec![mouse()], Vec::new(), ""),
+            (vec![mouse()], Vec::new(), "")
+        );
+    }
 
     #[test]
     fn a_long_device_name_is_shortened_without_losing_the_start() {

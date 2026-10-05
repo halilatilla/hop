@@ -500,6 +500,7 @@ impl Hop {
             &self.menu_peer_line(),
             &move_target,
             self.notice.as_deref().unwrap_or(""),
+            self.list_error.as_deref().unwrap_or(""),
         );
     }
 
