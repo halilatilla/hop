@@ -42,15 +42,17 @@ macOS will ask for Bluetooth access, and for the local network when the two Macs
 
 ## Move a device
 
-On the Mac that has the device, choose **Share**. Both menus then list it under **Shared**.
+A checkmark means **Connected here**.
 
-A checkmark means this Mac is using it. On the other Mac, choose **Connect**.
+On the Mac that has the device, choose **Let** the other Mac **move it**. On the other Mac, the row says who it is **Connected to**. Choose **Move here**.
 
-**Remove** is inside the checkmark’s row. That takes the device off the shared list and leaves it connected here.
+While it moves, the row says **Moving…**. The menu bar says **Moving**. It does not say the device has moved until the other Mac actually has it.
 
-**Other Mac** is the other computer’s name. When that Mac is not running Hop, the line says **Not running Hop**.
+**Keep on this Mac**, inside the checkmark’s row, leaves the device connected here and takes it off the list the other Mac can move.
 
-The menu bar itself is just the icon. It reads **Allow** while a new Mac is waiting, and **…** while a device is connecting.
+**Other Mac** is the other computer’s name. When Hop is not open there, the line says **Hop isn't running**.
+
+The menu bar icon stays quiet. It reads **Allow** while a new Mac is waiting.
 
 ## If a move does not finish
 
@@ -70,3 +72,11 @@ cargo run --release
 The first build compiles GPUI from the Zed repository. This repo does not fork Zed.
 
 Hop keeps the shared list in `~/Library/Application Support/Hop`. Set `HOP_CONFIG_DIR` to use another folder.
+
+## Privacy
+
+Hop has no account and no cloud service. The two Macs talk on the local network. Hop does not collect telemetry.
+
+## License
+
+[Apache-2.0](LICENSE). To build or report a problem, see [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).

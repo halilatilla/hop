@@ -71,15 +71,19 @@ pub fn set_devices(
     local: Vec<MenuDevice>,
     allows: Vec<MenuAllow>,
     peer_line: &str,
+    move_target: &str,
+    notice: &str,
 ) {
     #[cfg(target_os = "macos")]
-    set_devices_mac(devices, local, allows, peer_line);
+    set_devices_mac(devices, local, allows, peer_line, move_target, notice);
     #[cfg(not(target_os = "macos"))]
     {
         let _ = devices;
         let _ = local;
         let _ = allows;
         let _ = peer_line;
+        let _ = move_target;
+        let _ = notice;
     }
 }
 
@@ -361,6 +365,61 @@ fn add_peer(menu: *mut objc::runtime::Object, title: &str) {
 }
 
 #[cfg(target_os = "macos")]
+fn add_label(
+    menu: *mut objc::runtime::Object,
+    title: &str,
+    symbol: &str,
+    subtitle: &str,
+    checked: bool,
+) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
+        let item: *mut Object = msg_send![item, init];
+        let titled = if set_subtitle(item, subtitle) {
+            title.to_string()
+        } else {
+            shown_title(title, subtitle)
+        };
+        let _: () = msg_send![item, setTitle: ns_string(&titled)];
+        set_symbol(item, symbol);
+        if checked {
+            // NSControlStateValueOn
+            let _: () = msg_send![item, setState: 1isize];
+        }
+        let _: () = msg_send![item, setEnabled: false];
+        let _: () = msg_send![menu, addItem: item];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_subtitle(item: *mut objc::runtime::Object, subtitle: &str) -> bool {
+    use objc::{msg_send, sel, sel_impl};
+
+    if subtitle.is_empty() {
+        return false;
+    }
+    unsafe {
+        let selector = sel!(setSubtitle:);
+        let available: bool = msg_send![item, respondsToSelector: selector];
+        if available {
+            let _: () = msg_send![item, setSubtitle: ns_string(subtitle)];
+        }
+        available
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shown_title(title: &str, subtitle: &str) -> String {
+    if subtitle.is_empty() {
+        return title.to_string();
+    }
+    format!("{title} — {subtitle}")
+}
+
+#[cfg(target_os = "macos")]
 fn set_symbol(item: *mut objc::runtime::Object, name: &str) {
     use objc::runtime::{Object, YES};
     use objc::{class, msg_send, sel, sel_impl};
@@ -420,6 +479,8 @@ fn set_devices_mac(
     local: Vec<MenuDevice>,
     allows: Vec<MenuAllow>,
     peer_line: &str,
+    move_target: &str,
+    notice: &str,
 ) {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
@@ -459,49 +520,68 @@ fn set_devices_mac(
             );
             set_symbol(item, "laptopcomputer");
         }
-        if (!peer_line.is_empty() || !allows.is_empty())
+        if !notice.is_empty() {
+            add_label(menu, notice, "", "", false);
+        }
+        if (!peer_line.is_empty() || !allows.is_empty() || !notice.is_empty())
             && (!local.is_empty() || !devices.is_empty())
         {
             add_separator(menu);
         }
-        if !local.is_empty() {
-            add_heading(menu, "On this Mac");
-            for (index, device) in local.iter().enumerate() {
+        for (index, device) in local.iter().enumerate() {
+            add_label(
+                menu,
+                &device.name,
+                symbol_name(&device.kind),
+                "Connected here",
+                true,
+            );
+            if !move_target.is_empty() {
                 let item = add_item(
                     menu,
                     target,
-                    &format!("Share {}", device.name),
+                    &format!("Let {move_target} move it"),
                     "",
                     SHARE_TAG + index as isize,
                 );
                 set_symbol(item, symbol_name(&device.kind));
             }
-            if !devices.is_empty() {
-                add_separator(menu);
-            }
         }
-        if !devices.is_empty() {
-            add_heading(menu, "Shared");
+        if !local.is_empty() && !devices.is_empty() {
+            add_separator(menu);
         }
         let moving = devices.iter().any(|device| device.busy);
         for (index, device) in devices.iter().enumerate() {
-            let title = if device.busy {
-                format!("Connecting {}", device.name)
+            let symbol = symbol_name(&device.kind);
+            if device.busy {
+                add_label(menu, &device.name, symbol, "Moving…", false);
             } else if device.connected {
-                device.name.clone()
-            } else {
-                format!("Connect {}", device.name)
-            };
-            let item = add_item(menu, target, &title, "", DEVICE_TAG + index as isize);
-            set_symbol(item, symbol_name(&device.kind));
-            if device.busy || (moving && !device.connected) {
-                let _: () = msg_send![item, setEnabled: false];
-            } else if device.connected {
+                let item = add_item(menu, target, &device.name, "", DEVICE_TAG + index as isize);
+                set_symbol(item, symbol);
+                if !set_subtitle(item, "Connected here") {
+                    let _: () = msg_send![item, setTitle: ns_string(&shown_title(&device.name, "Connected here"))];
+                }
                 // NSControlStateValueOn
                 let _: () = msg_send![item, setState: 1isize];
                 let submenu: *mut Object = msg_send![class!(NSMenu), new];
-                add_item(submenu, target, "Remove", "", REMOVE_TAG + index as isize);
+                add_item(
+                    submenu,
+                    target,
+                    "Keep on this Mac",
+                    "",
+                    REMOVE_TAG + index as isize,
+                );
                 let _: () = msg_send![item, setSubmenu: submenu];
+            } else {
+                let place = if move_target.is_empty() {
+                    "Unavailable".to_string()
+                } else {
+                    format!("Connected to {move_target}")
+                };
+                add_label(menu, &device.name, symbol, &place, false);
+                if !move_target.is_empty() && !moving {
+                    add_item(menu, target, "Move here", "", DEVICE_TAG + index as isize);
+                }
             }
         }
         add_separator(menu);

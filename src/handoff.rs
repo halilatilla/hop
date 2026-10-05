@@ -118,7 +118,7 @@ pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
     match reason {
         StayReason::NothingHere => Some("That device is not connected on this Mac."),
         StayReason::PeerUnreachable => {
-            Some("The other Mac is not running Hop. Devices stayed on this Mac.")
+            Some("Hop isn't running on the other Mac. The devices stayed connected here.")
         }
         StayReason::NeedsAllow => {
             Some("Allow the other Mac, on both Macs. Devices stayed on this Mac.")
@@ -135,7 +135,7 @@ pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
         StayReason::StillHere => Some("The devices stayed on this Mac."),
         StayReason::NothingThere => Some("No shared device is on the other Mac."),
         StayReason::NothingShared => {
-            Some("Nothing is on the shared list. On the Mac that has the device, share it.")
+            Some("Nothing can move yet. On the Mac that has the device, let the other Mac move it.")
         }
         StayReason::AlreadyHere => Some("Those shared devices are already on this Mac."),
         StayReason::Busy => Some("Hop is already moving a device."),
@@ -144,7 +144,7 @@ pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
 }
 
 pub fn reconnected_notice() -> &'static str {
-    "The other Mac did not take the devices. They are connected on this Mac again."
+    "Couldn't move the devices. They are connected here again."
 }
 
 #[allow(dead_code)]
@@ -183,10 +183,10 @@ pub fn execute(ops: &[BluetoothOp]) -> bool {
 pub fn tooltip(peer: Peer) -> String {
     match peer {
         Peer::Missing => {
-            "The other Mac is not running Hop. Shared devices stay where they are.".to_string()
+            "Hop isn't running on the other Mac. Devices stay where they are.".to_string()
         }
         Peer::Ready => {
-            "A checkmark is on this Mac. Choose a device to connect it here.".to_string()
+            "A checkmark means connected here. Move here brings a device to this Mac.".to_string()
         }
     }
 }
@@ -296,11 +296,11 @@ mod tests {
     fn the_tooltip_says_where_the_other_mac_is() {
         assert_eq!(
             tooltip(Peer::Missing),
-            "The other Mac is not running Hop. Shared devices stay where they are."
+            "Hop isn't running on the other Mac. Devices stay where they are."
         );
         assert_eq!(
             tooltip(Peer::Ready),
-            "A checkmark is on this Mac. Choose a device to connect it here."
+            "A checkmark means connected here. Move here brings a device to this Mac."
         );
     }
 }

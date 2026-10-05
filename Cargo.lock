@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "hop"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "block",
  "ed25519-dalek",

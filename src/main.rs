@@ -372,7 +372,7 @@ impl Hop {
 
     fn publish_status(&mut self) {
         let label = if matches!(self.phase, Phase::Sending { .. }) {
-            "…".to_string()
+            "Moving".to_string()
         } else if matches!(self.seen, link::Seen::Nearby) {
             "Allow".to_string()
         } else {
@@ -461,7 +461,19 @@ impl Hop {
                 code: allow.code.clone(),
             })
             .collect();
-        menu_bar::set_devices(rows, self.menu_local(), allows, &self.menu_peer_line());
+        let move_target = if matches!(self.seen, link::Seen::Ready) {
+            link::other_mac()
+        } else {
+            String::new()
+        };
+        menu_bar::set_devices(
+            rows,
+            self.menu_local(),
+            allows,
+            &self.menu_peer_line(),
+            &move_target,
+            self.notice.as_deref().unwrap_or(""),
+        );
     }
 
     fn menu_local(&self) -> Vec<menu_bar::MenuDevice> {
@@ -482,7 +494,7 @@ impl Hop {
         match self.seen {
             link::Seen::Ready => link::other_mac(),
             link::Seen::Crowd => "More than one Mac".to_string(),
-            link::Seen::None => "Not running Hop".to_string(),
+            link::Seen::None => "Hop isn't running".to_string(),
             link::Seen::Nearby => String::new(),
         }
     }
@@ -746,7 +758,7 @@ impl Render for Hop {
             list = list.child(section_label("Shared", colors));
             if shared.is_empty() {
                 list = list.child(note(
-                    "Nothing shared yet. Share a device from this Mac.",
+                    "Nothing can move yet. On this Mac, let the other Mac move a device.",
                     colors,
                 ));
             } else {
@@ -868,19 +880,18 @@ fn device_row(
                 ),
         );
     row = match action {
-        RowAction::Connecting => row.child(status_chip("Connecting…", false, colors)),
-        RowAction::Connected => {
-            row.child(status_chip("Connected", true, colors))
-                .child(outline_button(
-                    format!("remove-{}", device.address),
-                    "Remove",
-                    colors,
-                    on_remove,
-                ))
-        }
+        RowAction::Connecting => row.child(status_chip("Moving…", false, colors)),
+        RowAction::Connected => row
+            .child(status_chip("Connected here", true, colors))
+            .child(outline_button(
+                format!("remove-{}", device.address),
+                "Keep here",
+                colors,
+                on_remove,
+            )),
         RowAction::Connect => row.child(action_button(
             format!("act-{}", device.address),
-            "Connect",
+            "Move here",
             true,
             true,
             colors,
@@ -888,13 +899,17 @@ fn device_row(
         )),
         RowAction::Share => row.child(outline_button(
             format!("act-{}", device.address),
-            "Share",
+            "Let it move",
             colors,
             on_click,
         )),
         RowAction::Wait => row.child(action_button(
             format!("act-{}", device.address),
-            if device.chosen { "Connect" } else { "Share" },
+            if device.chosen {
+                "Move here"
+            } else {
+                "Let it move"
+            },
             device.chosen,
             false,
             colors,
