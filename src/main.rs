@@ -371,9 +371,7 @@ impl Hop {
         self.refresh(cx);
         self.publish_status();
         self.sync_menu();
-        self.report(outcome.unwrap_or(handoff::Outcome::Stayed(
-            handoff::StayReason::PeerUnreachable,
-        )));
+        self.report(outcome.unwrap_or(handoff::Outcome::Stayed(handoff::StayReason::GaveUp)));
         cx.notify();
     }
 

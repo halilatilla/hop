@@ -389,10 +389,10 @@ pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome 
         return Outcome::Stayed(StayReason::Busy);
     };
     let Some(world) = world() else {
-        return Outcome::Stayed(StayReason::PeerUnreachable);
+        return Outcome::Stayed(StayReason::CouldNotReach);
     };
     let Ok(identity) = world.lock().map(|world| world.identity.clone()) else {
-        return Outcome::Stayed(StayReason::PeerUnreachable);
+        return Outcome::Stayed(StayReason::CouldNotReach);
     };
     let _ = message(&target, "share", &addresses, &[], Duration::from_secs(5));
     let id = wire::new_id();
@@ -405,22 +405,23 @@ pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome 
     };
     let mut stream = match connect_host(&target.host, target.port) {
         Ok(stream) => stream,
-        Err(_) => return Outcome::Stayed(StayReason::PeerUnreachable),
+        Err(_) => return Outcome::Stayed(StayReason::CouldNotReach),
     };
     nosigpipe(&stream);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     if wire::write_frame(&mut stream, &wire::seal(&identity, &body)).is_err() {
-        return Outcome::Stayed(StayReason::PeerUnreachable);
+        return Outcome::Stayed(StayReason::CouldNotReach);
     }
-    let Ok(reply_bytes) = wire::read_frame(&mut stream) else {
-        return Outcome::Stayed(StayReason::PeerUnreachable);
+    let reply_bytes = match wire::read_frame(&mut stream) {
+        Ok(bytes) => bytes,
+        Err(err) => return Outcome::Stayed(crate::handoff::stay_after_read(err.kind())),
     };
     let Some((key, reply)) = wire::unseal(&reply_bytes) else {
-        return Outcome::Stayed(StayReason::PeerUnreachable);
+        return Outcome::Stayed(StayReason::BadReply);
     };
     if key != target.key || reply.id != id {
-        return Outcome::Stayed(StayReason::PeerUnreachable);
+        return Outcome::Stayed(StayReason::BadReply);
     }
     match crate::handoff::after_want(Some(reply.op.as_str())) {
         WantResult::Stay(reason) => Outcome::Stayed(reason),

@@ -32,6 +32,10 @@ pub enum BluetoothOp {
 pub enum StayReason {
     NothingHere,
     PeerUnreachable,
+    CouldNotReach,
+    NoAnswer,
+    BadReply,
+    GaveUp,
     NeedsAllow,
     Crowd,
     Refused,
@@ -69,7 +73,8 @@ pub fn after_ask(reply: Option<&str>) -> AskResult {
         Some("accept") => AskResult::Disconnect,
         Some("refuse") => AskResult::Stay(StayReason::Refused),
         Some("unpaired") => AskResult::Stay(StayReason::NotPaired),
-        _ => AskResult::Stay(StayReason::PeerUnreachable),
+        Some(_) => AskResult::Stay(StayReason::BadReply),
+        None => AskResult::Stay(StayReason::NoAnswer),
     }
 }
 
@@ -103,7 +108,16 @@ pub fn after_want(reply: Option<&str>) -> WantResult {
         Some("refuse") => WantResult::Stay(StayReason::Refused),
         Some("busy") => WantResult::Stay(StayReason::Busy),
         Some("still") => WantResult::Stay(StayReason::StayedThere),
-        _ => WantResult::Stay(StayReason::PeerUnreachable),
+        Some(_) => WantResult::Stay(StayReason::BadReply),
+        None => WantResult::Stay(StayReason::NoAnswer),
+    }
+}
+
+pub fn stay_after_read(kind: std::io::ErrorKind) -> StayReason {
+    match kind {
+        std::io::ErrorKind::TimedOut => StayReason::NoAnswer,
+        std::io::ErrorKind::InvalidData => StayReason::BadReply,
+        _ => StayReason::CouldNotReach,
     }
 }
 
@@ -119,6 +133,18 @@ pub fn stayed_notice(reason: StayReason) -> Option<&'static str> {
         StayReason::NothingHere => Some("That device is not connected on this Mac."),
         StayReason::PeerUnreachable => {
             Some("Hop isn't running on the other Mac. The devices stayed connected here.")
+        }
+        StayReason::CouldNotReach => {
+            Some("Couldn't reach the other Mac. The devices stayed connected here.")
+        }
+        StayReason::NoAnswer => {
+            Some("The other Mac did not answer. The devices stayed connected here.")
+        }
+        StayReason::GaveUp => {
+            Some("Stopped waiting for the other Mac. The devices stayed connected here.")
+        }
+        StayReason::BadReply => {
+            Some("The other Mac's reply could not be used. The devices stayed connected here.")
         }
         StayReason::NeedsAllow => {
             Some("Allow the other Mac, on both Macs. Devices stayed on this Mac.")
@@ -196,7 +222,7 @@ mod tests {
     use super::{
         AskResult, BluetoothOp, DropResult, Outcome, Peer, PeerReply, Preflight, ReleaseResult,
         StayReason, WantResult, after_ask, after_drop, after_release, after_want, execute, run,
-        tooltip,
+        stay_after_read, stayed_notice, tooltip,
     };
 
     fn mouse() -> Vec<String> {
@@ -249,9 +275,10 @@ mod tests {
 
     #[test]
     fn a_stranger_reply_does_not_disconnect() {
+        assert_eq!(after_ask(None), AskResult::Stay(StayReason::NoAnswer));
         assert_eq!(
-            after_ask(None),
-            AskResult::Stay(StayReason::PeerUnreachable)
+            after_ask(Some("later")),
+            AskResult::Stay(StayReason::BadReply)
         );
         assert_eq!(
             after_ask(Some("refuse")),
@@ -279,9 +306,10 @@ mod tests {
             WantResult::Stay(StayReason::StayedThere)
         );
         assert_eq!(after_want(Some("busy")), WantResult::Stay(StayReason::Busy));
+        assert_eq!(after_want(None), WantResult::Stay(StayReason::NoAnswer));
         assert_eq!(
-            after_want(None),
-            WantResult::Stay(StayReason::PeerUnreachable)
+            after_want(Some("later")),
+            WantResult::Stay(StayReason::BadReply)
         );
     }
 
@@ -290,6 +318,38 @@ mod tests {
         assert_eq!(after_release(Some("took")), ReleaseResult::Moved);
         assert_eq!(after_release(Some("failed")), ReleaseResult::Reconnect);
         assert_eq!(after_release(None), ReleaseResult::Reconnect);
+    }
+
+    #[test]
+    fn the_notice_says_why_the_devices_stayed() {
+        assert_eq!(
+            stayed_notice(StayReason::PeerUnreachable),
+            Some("Hop isn't running on the other Mac. The devices stayed connected here.")
+        );
+        assert_eq!(
+            stayed_notice(StayReason::CouldNotReach),
+            Some("Couldn't reach the other Mac. The devices stayed connected here.")
+        );
+        assert_eq!(
+            stayed_notice(stay_after_read(std::io::ErrorKind::TimedOut)),
+            Some("The other Mac did not answer. The devices stayed connected here.")
+        );
+        assert_eq!(
+            stayed_notice(StayReason::BadReply),
+            Some("The other Mac's reply could not be used. The devices stayed connected here.")
+        );
+        assert_eq!(
+            stayed_notice(StayReason::GaveUp),
+            Some("Stopped waiting for the other Mac. The devices stayed connected here.")
+        );
+        assert_eq!(
+            stay_after_read(std::io::ErrorKind::ConnectionReset),
+            StayReason::CouldNotReach
+        );
+        assert_eq!(
+            stay_after_read(std::io::ErrorKind::InvalidData),
+            StayReason::BadReply
+        );
     }
 
     #[test]
