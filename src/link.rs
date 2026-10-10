@@ -606,7 +606,13 @@ fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
         } else {
             false
         };
-        let decision = wire::reply(&body.op, allowed, fresh && not_replayed, &world.paired, &body.addresses);
+        let decision = wire::reply(
+            &body.op,
+            allowed,
+            fresh && not_replayed,
+            &world.paired,
+            &body.addresses,
+        );
         (world.identity.clone(), decision)
     };
     if matches!(decision, Reply::Message("kept")) {
@@ -624,7 +630,15 @@ fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
                 (world.shared.clone(), pending, world.quiet.clone())
             })
             .unwrap_or_else(|_| (HashSet::new(), HashSet::new(), HashSet::new()));
-        give_devices(&mut stream, &identity, &key, &body, &shared, &pending, &quiet);
+        give_devices(
+            &mut stream,
+            &identity,
+            &key,
+            &body,
+            &shared,
+            &pending,
+            &quiet,
+        );
         return;
     }
     let op = match decision {
@@ -693,7 +707,7 @@ fn give_devices(
         .iter()
         .map(|address| wire::canon(address))
         .filter(|address| {
-            !address.is_empty() 
+            !address.is_empty()
                 && !quiet.contains(address)
                 && (shared.contains(address) || pending.contains(address))
         })

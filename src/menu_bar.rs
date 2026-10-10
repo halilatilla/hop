@@ -606,7 +606,13 @@ fn set_devices_mac(
                 set_symbol(item, "laptopcomputer");
             }
         } else if allows.len() > 1 {
-            add_label(menu, "Multiple Macs nearby", "", "Compare codes before trusting", false);
+            add_label(
+                menu,
+                "Multiple Macs nearby",
+                "",
+                "Compare codes before trusting",
+                false,
+            );
         }
         if !notice.is_empty() {
             add_label(menu, notice, "", "", false);
