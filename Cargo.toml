@@ -7,7 +7,7 @@ license = "Apache-2.0"
 publish = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(cargo_clippy)'] }
+unexpected_cfgs = "allow"
 
 [dependencies]
 # Same GPUI pin as Stand. The platform crate is not on crates.io.
