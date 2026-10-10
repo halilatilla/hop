@@ -6,6 +6,9 @@ description = "Send chosen Bluetooth devices between two Macs"
 license = "Apache-2.0"
 publish = false
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(cargo_clippy)'] }
+
 [dependencies]
 # Same GPUI pin as Stand. The platform crate is not on crates.io.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "06afd454ec3f23b7c97ce7527e9be9e1478564a4" }
