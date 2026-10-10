@@ -32,17 +32,16 @@ pub fn config_dir() -> PathBuf {
 }
 
 pub fn choice_path() -> PathBuf {
-    if let Some(dir) = std::env::var_os("HOP_CONFIG_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir).join("choice.json");
-        }
+    if let Some(dir) = std::env::var_os("HOP_CONFIG_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir).join("choice.json");
     }
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        return home
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/Application Support/Hop/choice.json");
+        home.unwrap_or_else(|| PathBuf::from("."))
+            .join("Library/Application Support/Hop/choice.json")
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -63,6 +62,11 @@ pub fn load(path: &Path) -> io::Result<Choice> {
 pub fn save(path: &Path, choice: &Choice) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
     }
     let mut addresses: Vec<_> = choice
         .addresses
@@ -100,7 +104,23 @@ pub fn save(path: &Path, choice: &Choice) -> io::Result<()> {
     })
     .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text + "\n")?;
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all((text + "\n").as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&tmp, text + "\n")?;
+    }
     fs::rename(&tmp, path)?;
     Ok(())
 }
