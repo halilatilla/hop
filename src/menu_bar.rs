@@ -552,6 +552,7 @@ fn add_item(
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
 fn set_devices_mac(
     devices: Vec<MenuDevice>,
     local: Vec<MenuDevice>,

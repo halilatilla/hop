@@ -1330,19 +1330,19 @@ unsafe extern "C" fn resolve_reply(
         return;
     }
     let shared = unsafe { Arc::from_raw(context as *const Shared) };
-    if let Ok(mut slots) = shared.resolves.lock() {
-        if let Some(slot) = slots.iter_mut().find(|slot| slot.sd == sd as usize) {
-            slot.done = true;
-            if error == 0 {
-                slot.host = c_string(hosttarget);
-                slot.port = u16::from_be(port);
-                if !txt.is_null() {
-                    let txt = unsafe { std::slice::from_raw_parts(txt, txt_len as usize) };
-                    slot.key = txt_key(txt);
-                }
-            } else {
-                slot.error = true;
+    if let Ok(mut slots) = shared.resolves.lock()
+        && let Some(slot) = slots.iter_mut().find(|slot| slot.sd == sd as usize)
+    {
+        slot.done = true;
+        if error == 0 {
+            slot.host = c_string(hosttarget);
+            slot.port = u16::from_be(port);
+            if !txt.is_null() {
+                let txt = unsafe { std::slice::from_raw_parts(txt, txt_len as usize) };
+                slot.key = txt_key(txt);
             }
+        } else {
+            slot.error = true;
         }
     }
     std::mem::forget(shared);
