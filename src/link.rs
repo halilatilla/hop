@@ -5,9 +5,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{self, ErrorKind};
-use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(target_os = "macos")]
 use std::net::TcpListener;
+use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
