@@ -40,9 +40,8 @@ pub fn choice_path() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        return home
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/Application Support/Hop/choice.json");
+        home.unwrap_or_else(|| PathBuf::from("."))
+            .join("Library/Application Support/Hop/choice.json")
     }
     #[cfg(not(target_os = "macos"))]
     {

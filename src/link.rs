@@ -1297,18 +1297,19 @@ unsafe extern "C" fn browse_reply(
             context,
         )
     };
-    if err == 0 && !sd.is_null() {
-        if let Ok(mut slots) = shared.resolves.lock() {
-            slots.push(Resolve {
-                sd: sd as usize,
-                instance,
-                done: false,
-                error: false,
-                key: None,
-                host: String::new(),
-                port: 0,
-            });
-        }
+    if err == 0
+        && !sd.is_null()
+        && let Ok(mut slots) = shared.resolves.lock()
+    {
+        slots.push(Resolve {
+            sd: sd as usize,
+            instance,
+            done: false,
+            error: false,
+            key: None,
+            host: String::new(),
+            port: 0,
+        });
     }
     std::mem::forget(shared);
 }
