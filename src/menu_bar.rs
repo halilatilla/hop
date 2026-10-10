@@ -1,6 +1,7 @@
 //! Menu bar presence on macOS. Closing the window leaves Hop running.
 
-use std::ffi::CString;
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +70,7 @@ pub fn set_tooltip(text: &str) {
     let _ = text;
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn set_devices(
     devices: Vec<MenuDevice>,
     local: Vec<MenuDevice>,
@@ -233,6 +235,9 @@ fn install_mac() {
                 let Some(allow) = allows.get(index) else {
                     return;
                 };
+                if !confirm_allow(&allow.name, &allow.code) {
+                    return;
+                }
                 MenuCommand::Allow(allow.id.clone())
             }
             _ => return,
@@ -459,11 +464,11 @@ fn set_access_label(item: *mut objc::runtime::Object, text: &str) {
     }
 }
 
-fn shown_devices<'a>(
+fn shown_devices(
     devices: Vec<MenuDevice>,
     local: Vec<MenuDevice>,
-    bluetooth_error: &'a str,
-) -> (Vec<MenuDevice>, Vec<MenuDevice>, &'a str) {
+    bluetooth_error: &str,
+) -> (Vec<MenuDevice>, Vec<MenuDevice>, &str) {
     if bluetooth_error.is_empty() {
         (devices, local, bluetooth_error)
     } else {
@@ -589,15 +594,19 @@ fn set_devices_mac(
         if !forget_id.is_empty() {
             add_item(menu, target, "Forget this Mac", "", FORGET_TAG);
         }
-        for (index, allow) in allows.iter().enumerate() {
-            let item = add_item(
-                menu,
-                target,
-                &format!("{}  Codes match · {}", allow.code, allow.name),
-                "",
-                ALLOW_TAG + index as isize,
-            );
-            set_symbol(item, "laptopcomputer");
+        if allows.len() == 1 {
+            for (index, allow) in allows.iter().enumerate() {
+                let item = add_item(
+                    menu,
+                    target,
+                    &format!("{}  Codes match · {}", allow.code, allow.name),
+                    "",
+                    ALLOW_TAG + index as isize,
+                );
+                set_symbol(item, "laptopcomputer");
+            }
+        } else if allows.len() > 1 {
+            add_label(menu, "Multiple Macs nearby", "", "Compare codes before trusting", false);
         }
         if !notice.is_empty() {
             add_label(menu, notice, "", "", false);
@@ -704,6 +713,30 @@ fn confirm_forget() -> bool {
         )];
         let _: () = msg_send![alert, addButtonWithTitle: ns_string("Cancel")];
         let _: () = msg_send![alert, addButtonWithTitle: ns_string("Forget")];
+        let response: isize = msg_send![alert, runModal];
+        let _: () = msg_send![alert, release];
+        response == 1001
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn confirm_allow(mac_name: &str, code: &str) -> bool {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let alert: *mut Object = msg_send![class!(NSAlert), new];
+        if alert.is_null() {
+            return false;
+        }
+        let _: () = msg_send![alert, setMessageText: ns_string("Trust this Mac?")];
+        let message = format!(
+            "Codes match: {}\n\nAfter you trust {}, it can ask this Mac to move shared Bluetooth devices.",
+            code, mac_name
+        );
+        let _: () = msg_send![alert, setInformativeText: ns_string(&message)];
+        let _: () = msg_send![alert, addButtonWithTitle: ns_string("Cancel")];
+        let _: () = msg_send![alert, addButtonWithTitle: ns_string("Trust")];
         let response: isize = msg_send![alert, runModal];
         let _: () = msg_send![alert, release];
         response == 1001

@@ -10,13 +10,14 @@ jobs:
   test:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - id: rust
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@be73d7920c329f220ce78e0234b8f96b7ae60248 # master 2024-01-04
         with:
           toolchain: ${{ steps.rust.outputs.channel }}
-          components: rustfmt
+          components: rustfmt, clippy
       - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
       - run: cargo check
       - run: cargo test

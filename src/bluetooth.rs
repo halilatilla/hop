@@ -1,5 +1,7 @@
 //! Paired Bluetooth devices on this Mac.
 
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 #[cfg(target_os = "macos")]
 use std::collections::HashSet;
 
@@ -142,7 +144,7 @@ fn connect_one(address: &str) -> bool {
     if still_paired {
         return on_main(move || connected_here(&address_owned));
     }
-    pair_here(&address_owned)
+    false
 }
 
 #[cfg(target_os = "macos")]
@@ -327,7 +329,7 @@ extern "C" fn pairing_confirm(
 }
 
 #[cfg(target_os = "macos")]
-fn on_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+fn on_main<R: Send + Default + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     use block::ConcreteBlock;
 
     unsafe extern "C" {
@@ -355,7 +357,8 @@ fn on_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
         );
     }
     rx.recv().unwrap_or_else(|_| {
-        panic!("Bluetooth work on the main thread did not finish");
+        eprintln!("hop: Bluetooth work on the main thread did not finish");
+        R::default()
     })
 }
 
