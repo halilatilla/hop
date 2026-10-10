@@ -7,6 +7,8 @@ use std::fs;
 use std::io::{self, ErrorKind};
 use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(target_os = "macos")]
+use std::net::TcpListener;
+#[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -4,6 +4,9 @@
 
 use std::sync::Mutex;
 
+#[cfg(target_os = "macos")]
+use std::ffi::CString;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
     Open,
