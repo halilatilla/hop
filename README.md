@@ -20,7 +20,7 @@ Pair each device once in **System Settings → Bluetooth**, on both Macs. Hop do
 
 ## Install
 
-1. Download `Hop-<version>-macos-arm64.zip` from [Releases](https://github.com/halilatilla/hop/releases). The current file is [Hop-0.2.4-macos-arm64.zip](https://github.com/halilatilla/hop/releases/download/v0.2.4/Hop-0.2.4-macos-arm64.zip).
+1. Download `Hop-<version>-macos-arm64.zip` from [Releases](https://github.com/halilatilla/hop/releases). The current file is [Hop-0.2.5-macos-arm64.zip](https://github.com/halilatilla/hop/releases/download/v0.2.5/Hop-0.2.5-macos-arm64.zip).
 2. Unzip it and move Hop into Applications. Replace the copy that is already there.
 3. Open Hop. This build is ad-hoc signed, not notarized, so macOS says it could not verify the app. Click Done, then open **System Settings → Privacy & Security** and click **Open Anyway**.
 

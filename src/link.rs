@@ -383,24 +383,36 @@ pub fn target() -> Option<Target> {
     let world = world()?;
     let world = world.lock().ok()?;
     let self_key = world.identity.public_key();
-    let mut found = None;
-    for sight in &world.sights {
+    one_target(&world.sights, &world.allowed, self_key)
+}
+
+fn one_target(
+    sights: &[Sight],
+    allowed: &HashMap<[u8; 32], String>,
+    self_key: [u8; 32],
+) -> Option<Target> {
+    let mut found: HashMap<[u8; 32], Target> = HashMap::new();
+    for sight in sights {
         let Some(key) = sight.key else {
             continue;
         };
-        if !sight.resolved || key == self_key || !world.allowed.contains_key(&key) {
+        if !sight.resolved || key == self_key || !allowed.contains_key(&key) {
             continue;
         }
-        if found.is_some() {
-            return None;
+        if sight.host.is_empty() || sight.port == 0 {
+            continue;
         }
-        found = Some(Target {
+        found.entry(key).or_insert(Target {
             key,
             host: sight.host.clone(),
             port: sight.port,
         });
     }
-    found
+    if found.len() == 1 {
+        found.into_values().next()
+    } else {
+        None
+    }
 }
 
 pub fn set_shared(addresses: HashSet<String>) {
@@ -1631,7 +1643,8 @@ mod tests {
     }
 
     use super::{
-        ConnectionGuard, Sight, addresses_to_connect, peer_counts, trusted_names, unknown_macs,
+        ConnectionGuard, Sight, addresses_to_connect, one_target, peer_counts, trusted_names,
+        unknown_macs,
     };
 
     fn sight(instance: &str, mac: [u8; 32]) -> Sight {
@@ -1667,6 +1680,23 @@ mod tests {
         let sights = vec![sight("Kitchen", other), sight("Office", second)];
         trusted.insert(second, "Office".to_string());
         assert_eq!(peer_counts(&sights, &trusted, self_key), (2, 0));
+    }
+
+    #[test]
+    fn a_move_still_has_a_target_when_one_mac_is_seen_twice() {
+        let self_key = key(9);
+        let other = key(1);
+        let sights = vec![sight("Kitchen", other), sight("Kitchen (2)", other)];
+        let mut allowed = HashMap::new();
+        allowed.insert(other, "Kitchen".to_string());
+        let target = one_target(&sights, &allowed, self_key).expect("one Mac");
+        assert_eq!(target.key, other);
+        assert_eq!(target.port, 1);
+
+        let second = key(2);
+        let sights = vec![sight("Kitchen", other), sight("Office", second)];
+        allowed.insert(second, "Office".to_string());
+        assert!(one_target(&sights, &allowed, self_key).is_none());
     }
 
     #[test]

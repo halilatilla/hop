@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.5
+
+**Move here** works when the other Mac shows up more than once on the network.
+
 ## 0.2.4
 
 Each nearby Mac is listed once, so you can choose which one to trust. The code is longer. A move connects only the devices you asked for.
