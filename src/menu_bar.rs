@@ -598,18 +598,25 @@ fn set_devices_mac(
         if !forget_id.is_empty() {
             add_item(menu, target, "Forget this Mac", "", FORGET_TAG);
         }
-        if allows.len() > 1 {
-            add_label(menu, "Compare codes before trusting", "", "", false);
-        }
-        for (index, allow) in allows.iter().enumerate() {
-            let item = add_item(
+        if allows.len() == 1 {
+            for (index, allow) in allows.iter().enumerate() {
+                let item = add_item(
+                    menu,
+                    target,
+                    &format!("{}  Codes match · {}", allow.code, allow.name),
+                    "",
+                    ALLOW_TAG + index as isize,
+                );
+                set_symbol(item, "laptopcomputer");
+            }
+        } else if allows.len() > 1 {
+            add_label(
                 menu,
-                target,
-                &format!("{}  Codes match · {}", allow.code, allow.name),
+                "Multiple Macs nearby",
                 "",
-                ALLOW_TAG + index as isize,
+                "Compare codes before trusting",
+                false,
             );
-            set_symbol(item, "laptopcomputer");
         }
         if !notice.is_empty() {
             add_label(menu, notice, "", "", false);

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7
+
+Moving a device uses the 0.2.3 behavior again. Later builds disconnected it from the other Mac and did not connect it here.
+
 ## 0.2.6
 
 **Move here** still reaches the other Mac when one of its network connections drops.

@@ -45,7 +45,6 @@ pub enum Seen {
 
 struct Sight {
     instance: String,
-    interface: u32,
     key: Option<[u8; 32]>,
     host: String,
     port: u16,
@@ -76,36 +75,24 @@ impl Drop for MoveGuard {
     }
 }
 
-const CONNECTION_LIMIT: usize = 10;
-
 struct ConnectionGuard;
 
 impl ConnectionGuard {
     fn try_acquire() -> Option<Self> {
-        let previous = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::AcqRel);
-        if previous >= CONNECTION_LIMIT {
-            ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Release);
-            None
-        } else {
-            Some(ConnectionGuard)
+        let current = ACTIVE_CONNECTIONS.load(Ordering::Acquire);
+        if current >= 10 {
+            return None;
         }
+        ACTIVE_CONNECTIONS
+            .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| ConnectionGuard)
     }
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        let mut current = ACTIVE_CONNECTIONS.load(Ordering::Acquire);
-        while current > 0 {
-            match ACTIVE_CONNECTIONS.compare_exchange_weak(
-                current,
-                current - 1,
-                Ordering::Release,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(actual) => current = actual,
-            }
-        }
+        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -154,39 +141,30 @@ pub fn seen() -> Seen {
         return Seen::None;
     };
     let self_key = world.identity.public_key();
-    let (ready, nearby) = peer_counts(&world.sights, &world.allowed, self_key);
-    if ready == 1 {
-        Seen::Ready
-    } else if ready > 1 {
-        Seen::Crowd
-    } else if nearby > 0 {
-        Seen::Nearby
-    } else {
-        Seen::None
-    }
-}
-
-fn peer_counts(
-    sights: &[Sight],
-    allowed: &HashMap<[u8; 32], String>,
-    self_key: [u8; 32],
-) -> (usize, usize) {
-    let mut ready = HashSet::new();
-    let mut nearby = HashSet::new();
-    for sight in sights {
+    let mut ready = 0;
+    let mut nearby = false;
+    for sight in &world.sights {
         let Some(key) = sight.key else {
             continue;
         };
         if !sight.resolved || key == self_key {
             continue;
         }
-        if allowed.contains_key(&key) {
-            ready.insert(key);
+        if world.allowed.contains_key(&key) {
+            ready += 1;
         } else {
-            nearby.insert(key);
+            nearby = true;
         }
     }
-    (ready.len(), nearby.len())
+    if ready == 1 {
+        Seen::Ready
+    } else if ready > 1 {
+        Seen::Crowd
+    } else if nearby {
+        Seen::Nearby
+    } else {
+        Seen::None
+    }
 }
 
 pub fn this_mac() -> String {
@@ -208,51 +186,31 @@ pub fn other_mac() -> String {
         return "The other Mac".to_string();
     };
     let self_key = world.identity.public_key();
-    let names = trusted_names(&world.sights, &world.allowed, self_key);
-    if names.len() == 1 {
-        names
-            .into_iter()
-            .next()
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "The other Mac".to_string())
-    } else {
-        "The other Mac".to_string()
-    }
-}
-
-fn trusted_names(
-    sights: &[Sight],
-    allowed: &HashMap<[u8; 32], String>,
-    self_key: [u8; 32],
-) -> Vec<String> {
-    let mut names = HashMap::new();
-    for sight in sights {
+    let mut found = None;
+    for sight in &world.sights {
         let Some(key) = sight.key else {
             continue;
         };
-        if !sight.resolved || key == self_key || !allowed.contains_key(&key) {
+        if !sight.resolved || key == self_key || !world.allowed.contains_key(&key) {
             continue;
         }
+        if found.is_some() {
+            return "The other Mac".to_string();
+        }
         let name = if sight.instance.is_empty() {
-            allowed
+            world
+                .allowed
                 .get(&key)
                 .cloned()
                 .unwrap_or_else(|| "The other Mac".to_string())
         } else {
             sight.instance.clone()
         };
-        names
-            .entry(key)
-            .and_modify(|existing: &mut String| {
-                if existing.is_empty() && !name.is_empty() {
-                    *existing = name.clone();
-                }
-            })
-            .or_insert(name);
+        found = Some(name);
     }
-    let mut names: Vec<_> = names.into_values().collect();
-    names.sort();
-    names
+    found
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "The other Mac".to_string())
 }
 
 pub fn peer() -> Peer {
@@ -271,48 +229,26 @@ pub fn pending() -> Vec<Nearby> {
         return Vec::new();
     };
     let self_key = world.identity.public_key();
-    unknown_macs(&world.sights, &world.allowed, self_key)
-}
-
-fn unknown_macs(
-    sights: &[Sight],
-    allowed: &HashMap<[u8; 32], String>,
-    self_key: [u8; 32],
-) -> Vec<Nearby> {
-    let mut found: HashMap<[u8; 32], Nearby> = HashMap::new();
-    for sight in sights {
-        let Some(key) = sight.key else {
-            continue;
-        };
-        if !sight.resolved || key == self_key || allowed.contains_key(&key) {
-            continue;
-        }
-        let name = if sight.instance.is_empty() {
-            "Mac".to_string()
-        } else {
-            sight.instance.clone()
-        };
-        match found.get_mut(&key) {
-            Some(row) => {
-                if row.name == "Mac" && name != "Mac" {
-                    row.name = name;
-                }
+    world
+        .sights
+        .iter()
+        .filter_map(|sight| {
+            let key = sight.key?;
+            if !sight.resolved || key == self_key || world.allowed.contains_key(&key) {
+                return None;
             }
-            None => {
-                found.insert(
-                    key,
-                    Nearby {
-                        id: wire::hex(&key),
-                        name,
-                        code: wire::pair_code(&self_key, &key),
-                    },
-                );
-            }
-        }
-    }
-    let mut rows: Vec<_> = found.into_values().collect();
-    rows.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-    rows
+            let name = if sight.instance.is_empty() {
+                "Mac".to_string()
+            } else {
+                sight.instance.clone()
+            };
+            Some(Nearby {
+                id: wire::hex(&key),
+                name,
+                code: wire::pair_code(&self_key, &key),
+            })
+        })
+        .collect()
 }
 
 pub fn allow(id: &str) {
@@ -348,7 +284,7 @@ pub fn forgettable() -> Option<String> {
     let world = world()?;
     let world = world.lock().ok()?;
     let self_key = world.identity.public_key();
-    let mut resolved = HashSet::new();
+    let mut resolved = Vec::new();
     for sight in &world.sights {
         let Some(key) = sight.key else {
             continue;
@@ -356,10 +292,10 @@ pub fn forgettable() -> Option<String> {
         if !sight.resolved || key == self_key || !world.allowed.contains_key(&key) {
             continue;
         }
-        resolved.insert(key);
+        resolved.push(key);
     }
     let key = if resolved.len() == 1 {
-        resolved.into_iter().next()?
+        resolved[0]
     } else if resolved.is_empty() && world.allowed.len() == 1 {
         *world.allowed.keys().next()?
     } else {
@@ -391,55 +327,28 @@ pub fn set_paired(addresses: HashSet<String>) {
     }
 }
 
-/// Every way to reach the one trusted Mac. Empty when that Mac is missing or
-/// more than one trusted Mac is nearby.
-pub fn reach() -> Vec<Target> {
-    let Some(world) = world() else {
-        return Vec::new();
-    };
-    let Ok(world) = world.lock() else {
-        return Vec::new();
-    };
+pub fn target() -> Option<Target> {
+    let world = world()?;
+    let world = world.lock().ok()?;
     let self_key = world.identity.public_key();
-    endpoints(&world.sights, &world.allowed, self_key)
-}
-
-fn endpoints(
-    sights: &[Sight],
-    allowed: &HashMap<[u8; 32], String>,
-    self_key: [u8; 32],
-) -> Vec<Target> {
-    let mut found = Vec::new();
-    for sight in sights {
+    let mut found = None;
+    for sight in &world.sights {
         let Some(key) = sight.key else {
             continue;
         };
-        if !sight.resolved || key == self_key || !allowed.contains_key(&key) {
+        if !sight.resolved || key == self_key || !world.allowed.contains_key(&key) {
             continue;
         }
-        if sight.host.is_empty() || sight.port == 0 {
-            continue;
+        if found.is_some() {
+            return None;
         }
-        if found.iter().any(|target: &Target| target.key != key) {
-            return Vec::new();
-        }
-        if found
-            .iter()
-            .any(|target: &Target| target.host == sight.host && target.port == sight.port)
-        {
-            continue;
-        }
-        found.push(Target {
+        found = Some(Target {
             key,
             host: sight.host.clone(),
             port: sight.port,
         });
     }
     found
-}
-
-fn forget_interface(sights: &mut Vec<Sight>, instance: &str, interface: u32) {
-    sights.retain(|sight| sight.instance != instance || sight.interface != interface);
 }
 
 pub fn set_shared(addresses: HashSet<String>) {
@@ -511,20 +420,18 @@ pub fn announce(add: Vec<String>, names: Vec<String>, remove: Vec<String>) {
         return;
     }
     thread::spawn(move || {
-        let targets = reach();
-        if targets.is_empty() {
+        let Some(target) = target() else {
             return;
-        }
+        };
         let mut acked = Vec::new();
         if !remove.is_empty()
-            && let Ok(reply) =
-                message_any(&targets, "unshare", &remove, &[], Duration::from_secs(5))
+            && let Ok(reply) = message(&target, "unshare", &remove, &[], Duration::from_secs(5))
             && reply.op == "kept"
         {
             acked = remove;
         }
         if !add.is_empty() {
-            let _ = message_any(&targets, "share", &add, &names, Duration::from_secs(5));
+            let _ = message(&target, "share", &add, &names, Duration::from_secs(5));
         }
         if acked.is_empty() {
             return;
@@ -537,7 +444,7 @@ pub fn announce(add: Vec<String>, names: Vec<String>, remove: Vec<String>) {
     });
 }
 
-pub fn claim(targets: Vec<Target>, addresses: Vec<String>) -> crate::handoff::Outcome {
+pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome {
     use crate::handoff::{Outcome, StayReason, WantResult};
 
     let addresses: Vec<String> = addresses
@@ -548,9 +455,6 @@ pub fn claim(targets: Vec<Target>, addresses: Vec<String>) -> crate::handoff::Ou
     if addresses.is_empty() {
         return Outcome::Stayed(StayReason::NothingThere);
     }
-    if targets.is_empty() {
-        return Outcome::Stayed(StayReason::CouldNotReach);
-    }
     let Some(_guard) = begin_move() else {
         return Outcome::Stayed(StayReason::Busy);
     };
@@ -560,7 +464,7 @@ pub fn claim(targets: Vec<Target>, addresses: Vec<String>) -> crate::handoff::Ou
     let Ok(identity) = world.lock().map(|world| world.identity.clone()) else {
         return Outcome::Stayed(StayReason::CouldNotReach);
     };
-    let _ = message_any(&targets, "share", &addresses, &[], Duration::from_secs(5));
+    let _ = message(&target, "share", &addresses, &[], Duration::from_secs(5));
     let id = wire::new_id();
     let body = Body {
         op: "want".to_string(),
@@ -569,8 +473,8 @@ pub fn claim(targets: Vec<Target>, addresses: Vec<String>) -> crate::handoff::Ou
         addresses: addresses.clone(),
         names: Vec::new(),
     };
-    let (target, mut stream) = match connect_targets(&targets) {
-        Ok(connected) => connected,
+    let mut stream = match connect_host(&target.host, target.port) {
+        Ok(stream) => stream,
         Err(_) => return Outcome::Stayed(StayReason::CouldNotReach),
     };
     nosigpipe(&stream);
@@ -599,8 +503,18 @@ pub fn claim(targets: Vec<Target>, addresses: Vec<String>) -> crate::handoff::Ou
             }
         }
         WantResult::Connect => {
-            let got = addresses_to_connect(&addresses, &reply.addresses);
-            let ok = !got.is_empty() && crate::bluetooth::connect_all(&got);
+            let got: Vec<String> = reply
+                .addresses
+                .iter()
+                .map(|address| wire::canon(address))
+                .filter(|address| !address.is_empty())
+                .collect();
+            let got = if got.is_empty() {
+                addresses.clone()
+            } else {
+                got
+            };
+            let ok = crate::bluetooth::connect_all(&got);
             let ack = Body {
                 op: if ok { "took" } else { "failed" }.to_string(),
                 id,
@@ -613,7 +527,7 @@ pub fn claim(targets: Vec<Target>, addresses: Vec<String>) -> crate::handoff::Ou
                 .into_iter()
                 .filter(|address| !got.contains(address))
                 .collect();
-            if !got.is_empty() && !rest.is_empty() {
+            if !rest.is_empty() {
                 let _ = crate::bluetooth::connect_all(&rest);
             }
             if ok {
@@ -623,23 +537,6 @@ pub fn claim(targets: Vec<Target>, addresses: Vec<String>) -> crate::handoff::Ou
             }
         }
     }
-}
-
-fn message_any(
-    targets: &[Target],
-    op: &str,
-    addresses: &[String],
-    names: &[String],
-    timeout: Duration,
-) -> Result<Body, String> {
-    let mut last = "could not connect".to_string();
-    for target in targets {
-        match message(target, op, addresses, names, timeout) {
-            Ok(body) => return Ok(body),
-            Err(err) => last = err,
-        }
-    }
-    Err(last)
 }
 
 fn message(
@@ -685,30 +582,17 @@ fn peers_path() -> PathBuf {
     crate::choice::config_dir().join("peers.json")
 }
 
-fn addresses_to_connect(asked: &[String], replied: &[String]) -> Vec<String> {
-    let replied: Vec<String> = replied
-        .iter()
-        .map(|address| wire::canon(address))
-        .filter(|address| !address.is_empty())
-        .collect();
-    let asked: Vec<String> = asked
-        .iter()
-        .map(|address| wire::canon(address))
-        .filter(|address| !address.is_empty())
-        .collect();
-    if replied.is_empty() {
-        return asked;
-    }
-    asked
-        .into_iter()
-        .filter(|address| replied.contains(address))
-        .collect()
-}
-
-fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>, _guard: ConnectionGuard) {
+fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
+    let Some(_guard) = ConnectionGuard::try_acquire() else {
+        return;
+    };
     nosigpipe(&stream);
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    if std::time::Instant::now() >= deadline {
+        return;
+    }
     let Ok(bytes) = wire::read_frame(&mut stream) else {
         return;
     };
@@ -763,6 +647,13 @@ fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>, _guard: Connec
     }
     let op = match decision {
         Reply::Message(op) => op,
+        Reply::Connect => {
+            if crate::bluetooth::connect_all(&body.addresses) {
+                "took"
+            } else {
+                "failed"
+            }
+        }
         Reply::Give => return,
     };
     let reply = Body {
@@ -890,32 +781,11 @@ impl World {
     }
 }
 
-fn connect_targets(targets: &[Target]) -> Result<(Target, TcpStream), String> {
-    let mut last = "could not connect".to_string();
-    for target in targets {
-        match connect_host(&target.host, target.port) {
-            Ok(stream) => return Ok((target.clone(), stream)),
-            Err(err) => last = err,
-        }
-    }
-    Err(last)
-}
-
-fn prefer_routable(addrs: Vec<std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
-    let routable: Vec<_> = addrs
-        .iter()
-        .copied()
-        .filter(|addr| !addr.ip().is_loopback())
-        .collect();
-    if routable.is_empty() { addrs } else { routable }
-}
-
 fn connect_host(host: &str, port: u16) -> Result<TcpStream, String> {
-    let addrs = (host, port)
+    let mut addrs = (host, port)
         .to_socket_addrs()
         .map_err(|err| err.to_string())?
         .collect::<Vec<_>>();
-    let mut addrs = prefer_routable(addrs);
     addrs.sort_by_key(|addr| addr.is_ipv6());
     let mut last = "could not connect".to_string();
     let mut tried = false;
@@ -1156,7 +1026,6 @@ struct Shared {
 struct Resolve {
     sd: usize,
     instance: String,
-    interface: u32,
     done: bool,
     error: bool,
     key: Option<[u8; 32]>,
@@ -1252,12 +1121,9 @@ fn accept_all(listener: &TcpListener, world: &Arc<Mutex<World>>) {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                let Some(guard) = ConnectionGuard::try_acquire() else {
-                    break;
-                };
                 let stream = accepted(stream);
                 let world = world.clone();
-                thread::spawn(move || handle_client(stream, world, guard));
+                thread::spawn(move || handle_client(stream, world));
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => break,
             Err(_) => break,
@@ -1392,23 +1258,15 @@ unsafe extern "C" fn browse_reply(
     let shared = unsafe { Arc::from_raw(context as *const Shared) };
     if flags & ADDED == 0 {
         if let Ok(mut world) = shared.world.lock() {
-            forget_interface(&mut world.sights, &instance, interface_index);
-        }
-        if let Ok(mut slots) = shared.resolves.lock() {
-            for slot in slots.iter_mut() {
-                if slot.instance == instance && slot.interface == interface_index {
-                    slot.done = true;
-                    slot.error = true;
-                }
-            }
+            world.sights.retain(|sight| sight.instance != instance);
         }
         std::mem::forget(shared);
         return;
     }
     let in_flight = shared.resolves.lock().ok().is_some_and(|slots| {
-        slots.iter().any(|slot| {
-            slot.instance == instance && slot.interface == interface_index && !slot.done
-        })
+        slots
+            .iter()
+            .any(|slot| slot.instance == instance && !slot.done)
     });
     if in_flight {
         std::mem::forget(shared);
@@ -1446,7 +1304,6 @@ unsafe extern "C" fn browse_reply(
         slots.push(Resolve {
             sd: sd as usize,
             instance,
-            interface: interface_index,
             done: false,
             error: false,
             key: None,
@@ -1518,7 +1375,7 @@ fn finish_resolves(shared: &Shared) {
         if let Some(existing) = world
             .sights
             .iter_mut()
-            .find(|sight| sight.instance == slot.instance && sight.interface == slot.interface)
+            .find(|sight| sight.instance == slot.instance)
         {
             existing.key = slot.key;
             existing.host = slot.host;
@@ -1527,7 +1384,6 @@ fn finish_resolves(shared: &Shared) {
         } else {
             world.sights.push(Sight {
                 instance: slot.instance,
-                interface: slot.interface,
                 key: slot.key,
                 host: slot.host,
                 port: slot.port,
@@ -1721,141 +1577,5 @@ mod tests {
             Some("Mac B")
         );
         let _ = fs::remove_dir_all(dir);
-    }
-
-    use super::{
-        ConnectionGuard, Sight, addresses_to_connect, endpoints, forget_interface, peer_counts,
-        prefer_routable, trusted_names, unknown_macs,
-    };
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-    fn sight(instance: &str, mac: [u8; 32]) -> Sight {
-        sight_on(instance, mac, 1, "mac.local", 1)
-    }
-
-    fn sight_on(instance: &str, mac: [u8; 32], interface: u32, host: &str, port: u16) -> Sight {
-        Sight {
-            instance: instance.to_string(),
-            interface,
-            key: Some(mac),
-            host: host.to_string(),
-            port,
-            resolved: true,
-        }
-    }
-
-    #[test]
-    fn one_mac_seen_twice_is_still_one_mac() {
-        let self_key = key(9);
-        let other = key(1);
-        let sights = vec![sight("Kitchen", other), sight("Kitchen (2)", other)];
-        let allowed = HashMap::new();
-        assert_eq!(peer_counts(&sights, &allowed, self_key), (0, 1));
-        let rows = unknown_macs(&sights, &allowed, self_key);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, wire::hex(&other));
-
-        let mut trusted = HashMap::new();
-        trusted.insert(other, "Kitchen".to_string());
-        assert_eq!(peer_counts(&sights, &trusted, self_key), (1, 0));
-        assert_eq!(
-            trusted_names(&sights, &trusted, self_key),
-            vec!["Kitchen".to_string()]
-        );
-
-        let second = key(2);
-        let sights = vec![sight("Kitchen", other), sight("Office", second)];
-        trusted.insert(second, "Office".to_string());
-        assert_eq!(peer_counts(&sights, &trusted, self_key), (2, 0));
-    }
-
-    #[test]
-    fn a_move_still_has_a_target_when_one_mac_is_seen_twice() {
-        let self_key = key(9);
-        let other = key(1);
-        let sights = vec![sight("Kitchen", other), sight("Kitchen (2)", other)];
-        let mut allowed = HashMap::new();
-        allowed.insert(other, "Kitchen".to_string());
-        let target = endpoints(&sights, &allowed, self_key)
-            .into_iter()
-            .next()
-            .expect("one Mac");
-        assert_eq!(target.key, other);
-        assert_eq!(target.port, 1);
-
-        let second = key(2);
-        let sights = vec![sight("Kitchen", other), sight("Office", second)];
-        allowed.insert(second, "Office".to_string());
-        assert!(endpoints(&sights, &allowed, self_key).is_empty());
-    }
-
-    #[test]
-    fn a_move_connects_only_the_addresses_it_asked_for() {
-        let asked = vec!["aa-bb".to_string(), "cc-dd".to_string()];
-        assert_eq!(addresses_to_connect(&asked, &[]), asked);
-        assert_eq!(
-            addresses_to_connect(&asked, &["cc-dd".into(), "ee-ff".into()]),
-            vec!["cc-dd".to_string()]
-        );
-        assert!(addresses_to_connect(&asked, &["ee-ff".into()]).is_empty());
-        assert_eq!(
-            addresses_to_connect(&["AA:BB".into()], &["aa-bb".into()]),
-            vec!["aa-bb".to_string()]
-        );
-    }
-
-    #[test]
-    fn ten_connections_are_the_limit_even_when_they_arrive_together() {
-        let mut held = Vec::new();
-        for _ in 0..10 {
-            held.push(ConnectionGuard::try_acquire().expect("a free slot"));
-        }
-        assert!(ConnectionGuard::try_acquire().is_none());
-        drop(held);
-
-        let got = std::sync::Mutex::new(Vec::new());
-        std::thread::scope(|scope| {
-            for _ in 0..32 {
-                scope.spawn(|| {
-                    if let Some(guard) = ConnectionGuard::try_acquire() {
-                        got.lock().expect("lock").push(guard);
-                    }
-                });
-            }
-        });
-        let guards = got.into_inner().expect("lock");
-        assert_eq!(guards.len(), 10);
-        drop(guards);
-        assert!(ConnectionGuard::try_acquire().is_some());
-    }
-
-    #[test]
-    fn a_move_keeps_the_other_path_when_one_interface_drops() {
-        let self_key = key(9);
-        let other = key(1);
-        let mut sights = vec![
-            sight_on("Kitchen", other, 1, "loop.local", 9),
-            sight_on("Kitchen", other, 14, "kitchen.local", 80),
-        ];
-        let mut allowed = HashMap::new();
-        allowed.insert(other, "Kitchen".to_string());
-        let paths = endpoints(&sights, &allowed, self_key);
-        assert_eq!(paths.len(), 2);
-        assert_eq!(paths[0].host, "loop.local");
-        assert_eq!(paths[1].host, "kitchen.local");
-
-        forget_interface(&mut sights, "Kitchen", 1);
-        let paths = endpoints(&sights, &allowed, self_key);
-        assert_eq!(paths.len(), 1);
-        assert_eq!(paths[0].host, "kitchen.local");
-        assert_eq!(paths[0].port, 80);
-    }
-
-    #[test]
-    fn a_connection_skips_loopback_when_the_mac_has_a_real_address() {
-        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1);
-        let lan = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 1);
-        assert_eq!(prefer_routable(vec![loopback, lan]), vec![lan]);
-        assert_eq!(prefer_routable(vec![loopback]), vec![loopback]);
     }
 }

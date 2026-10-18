@@ -336,8 +336,7 @@ impl Hop {
             cx.notify();
             return;
         }
-        let peers = link::reach();
-        if peers.is_empty() {
+        let Some(target) = link::target() else {
             let reason = match self.seen {
                 link::Seen::Nearby => handoff::StayReason::NeedsAllow,
                 link::Seen::Crowd => handoff::StayReason::Crowd,
@@ -346,10 +345,10 @@ impl Hop {
             self.report(handoff::Outcome::Stayed(reason));
             cx.notify();
             return;
-        }
+        };
         let addresses = targets.to_vec();
         let moving = addresses.clone();
-        self.flight = Some(std::thread::spawn(move || link::claim(peers, addresses)));
+        self.flight = Some(std::thread::spawn(move || link::claim(target, addresses)));
         self.phase = Phase::Sending {
             started: Instant::now(),
             addresses: moving,
