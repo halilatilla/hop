@@ -123,7 +123,6 @@ struct Hop {
     watch_until: Option<Instant>,
     published_paired: Option<HashSet<String>>,
     published_shared: Option<HashSet<String>>,
-    published_quiet: Option<HashSet<String>>,
     theme: Option<Subscription>,
 }
 
@@ -159,7 +158,6 @@ impl Hop {
             watch_until: None,
             published_paired: None,
             published_shared: None,
-            published_quiet: None,
             theme: None,
         }
     }
@@ -288,10 +286,6 @@ impl Hop {
         if self.published_shared.as_ref() != Some(&self.choice.addresses) {
             self.published_shared = Some(self.choice.addresses.clone());
             link::set_shared(self.choice.addresses.clone());
-        }
-        if self.published_quiet.as_ref() != Some(&self.choice.quiet) {
-            self.published_quiet = Some(self.choice.quiet.clone());
-            link::set_quiet(self.choice.quiet.clone());
         }
     }
 

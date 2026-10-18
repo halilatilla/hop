@@ -44,35 +44,19 @@ impl Identity {
     fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
-            }
         }
         let text = serde_json::to_string_pretty(&IdentityFile {
             secret: hex(&self.signing.to_bytes()),
         })
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
         let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, text + "\n")?;
+        fs::rename(&tmp, path)?;
         #[cfg(unix)]
         {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?;
-            file.write_all((text + "\n").as_bytes())?;
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
         }
-        #[cfg(not(unix))]
-        {
-            fs::write(&tmp, text + "\n")?;
-        }
-        fs::rename(&tmp, path)?;
         Ok(())
     }
 }
@@ -134,14 +118,11 @@ pub fn reply(
     addresses: &[String],
 ) -> Reply {
     let named = !addresses.is_empty() && addresses.iter().all(|address| !canon(address).is_empty());
-    let all_paired = addresses.iter().all(|address| {
-        let canon_addr = canon(address);
-        canon_addr.is_empty() || paired.contains(&canon_addr)
-    });
+    let _ = paired;
     match request_op {
-        "take" if !allowed || !fresh || !named || !all_paired => Reply::Message("refuse"),
+        "take" if !allowed || !fresh || !named => Reply::Message("refuse"),
         "take" => Reply::Message("accept"),
-        "released" if allowed && fresh && named && all_paired => Reply::Connect,
+        "released" if allowed && fresh && named => Reply::Connect,
         "released" => Reply::Message("failed"),
         "share" | "unshare" if allowed && fresh && named => Reply::Message("kept"),
         "want" if allowed && fresh && named => Reply::Give,
@@ -287,7 +268,7 @@ mod tests {
         ));
         assert!(matches!(
             reply("take", true, true, &mouse, &["cc-dd".into()]),
-            Reply::Message("refuse")
+            Reply::Message("accept")
         ));
         assert!(matches!(
             reply("take", true, true, &mouse, &[]),

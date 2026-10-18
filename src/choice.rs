@@ -62,11 +62,6 @@ pub fn load(path: &Path) -> io::Result<Choice> {
 pub fn save(path: &Path, choice: &Choice) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
-        }
     }
     let mut addresses: Vec<_> = choice
         .addresses
@@ -104,23 +99,7 @@ pub fn save(path: &Path, choice: &Choice) -> io::Result<()> {
     })
     .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
     let tmp = path.with_extension("json.tmp");
-    #[cfg(unix)]
-    {
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        file.write_all((text + "\n").as_bytes())?;
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(&tmp, text + "\n")?;
-    }
+    fs::write(&tmp, text + "\n")?;
     fs::rename(&tmp, path)?;
     Ok(())
 }

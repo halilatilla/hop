@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8
+
+Moving a device uses the 0.2.2 behavior again. 0.2.3 and later disconnected it from the other Mac and did not connect it here.
+
 ## 0.2.7
 
 Moving a device uses the 0.2.3 behavior again. Later builds disconnected it from the other Mac and did not connect it here.
