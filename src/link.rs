@@ -1,9 +1,14 @@
 //! Finds the other Mac on the local network and carries a signed send.
 
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{self, ErrorKind};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+#[cfg(target_os = "macos")]
+use std::net::TcpListener;
+use std::net::{TcpStream, ToSocketAddrs};
+#[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +56,7 @@ struct World {
     allowed: HashMap<[u8; 32], String>,
     paired: HashSet<String>,
     shared: HashSet<String>,
+    quiet: HashSet<String>,
     incoming_add: Vec<(String, String)>,
     incoming_remove: Vec<String>,
     acked_removals: Vec<String>,
@@ -59,12 +65,34 @@ struct World {
 }
 
 static MOVING: AtomicBool = AtomicBool::new(false);
+static ACTIVE_CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 struct MoveGuard;
 
 impl Drop for MoveGuard {
     fn drop(&mut self) {
         MOVING.store(false, Ordering::Release);
+    }
+}
+
+struct ConnectionGuard;
+
+impl ConnectionGuard {
+    fn try_acquire() -> Option<Self> {
+        let current = ACTIVE_CONNECTIONS.load(Ordering::Acquire);
+        if current >= 10 {
+            return None;
+        }
+        ACTIVE_CONNECTIONS
+            .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| ConnectionGuard)
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -88,6 +116,7 @@ pub fn start() {
             allowed,
             paired: HashSet::new(),
             shared: HashSet::new(),
+            quiet: HashSet::new(),
             incoming_add: Vec::new(),
             incoming_remove: Vec::new(),
             acked_removals: Vec::new(),
@@ -339,6 +368,19 @@ pub fn set_shared(addresses: HashSet<String>) {
     }
 }
 
+pub fn set_quiet(addresses: HashSet<String>) {
+    let Some(world) = world() else {
+        return;
+    };
+    if let Ok(mut world) = world.lock() {
+        world.quiet = addresses
+            .into_iter()
+            .map(|address| wire::canon(&address))
+            .filter(|address| !address.is_empty())
+            .collect();
+    }
+}
+
 pub struct Incoming {
     pub add: Vec<(String, String)>,
     pub remove: Vec<String>,
@@ -382,12 +424,11 @@ pub fn announce(add: Vec<String>, names: Vec<String>, remove: Vec<String>) {
             return;
         };
         let mut acked = Vec::new();
-        if !remove.is_empty() {
-            if let Ok(reply) = message(&target, "unshare", &remove, &[], Duration::from_secs(5)) {
-                if reply.op == "kept" {
-                    acked = remove;
-                }
-            }
+        if !remove.is_empty()
+            && let Ok(reply) = message(&target, "unshare", &remove, &[], Duration::from_secs(5))
+            && reply.op == "kept"
+        {
+            acked = remove;
         }
         if !add.is_empty() {
             let _ = message(&target, "share", &add, &names, Duration::from_secs(5));
@@ -395,10 +436,10 @@ pub fn announce(add: Vec<String>, names: Vec<String>, remove: Vec<String>) {
         if acked.is_empty() {
             return;
         }
-        if let Some(world) = world() {
-            if let Ok(mut world) = world.lock() {
-                world.acked_removals.extend(acked);
-            }
+        if let Some(world) = world()
+            && let Ok(mut world) = world.lock()
+        {
+            world.acked_removals.extend(acked);
         }
     });
 }
@@ -542,9 +583,16 @@ fn peers_path() -> PathBuf {
 }
 
 fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
+    let Some(_guard) = ConnectionGuard::try_acquire() else {
+        return;
+    };
     nosigpipe(&stream);
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    if std::time::Instant::now() >= deadline {
+        return;
+    }
     let Ok(bytes) = wire::read_frame(&mut stream) else {
         return;
     };
@@ -555,16 +603,27 @@ fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
         let Ok(mut world) = world.lock() else {
             return;
         };
-        let fresh = wire::fresh(body.exp, wire::now_secs()) && world.remember(&body.id);
         let allowed = world.allowed.contains_key(&key);
-        let decision = wire::reply(&body.op, allowed, fresh, &world.paired, &body.addresses);
+        let fresh = wire::fresh(body.exp, wire::now_secs());
+        let not_replayed = if allowed && fresh {
+            world.remember(&body.id)
+        } else {
+            false
+        };
+        let decision = wire::reply(
+            &body.op,
+            allowed,
+            fresh && not_replayed,
+            &world.paired,
+            &body.addresses,
+        );
         (world.identity.clone(), decision)
     };
     if matches!(decision, Reply::Message("kept")) {
         record_list(&world, &body);
     }
     if matches!(decision, Reply::Give) {
-        let (shared, pending) = world
+        let (shared, pending, quiet) = world
             .lock()
             .map(|world| {
                 let pending = world
@@ -572,10 +631,18 @@ fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>) {
                     .iter()
                     .map(|(address, _)| address.clone())
                     .collect();
-                (world.shared.clone(), pending)
+                (world.shared.clone(), pending, world.quiet.clone())
             })
-            .unwrap_or_else(|_| (HashSet::new(), HashSet::new()));
-        give_devices(&mut stream, &identity, &key, &body, &shared, &pending);
+            .unwrap_or_else(|_| (HashSet::new(), HashSet::new(), HashSet::new()));
+        give_devices(
+            &mut stream,
+            &identity,
+            &key,
+            &body,
+            &shared,
+            &pending,
+            &quiet,
+        );
         return;
     }
     let op = match decision {
@@ -607,7 +674,7 @@ fn record_list(world: &Arc<Mutex<World>>, body: &Body) {
         "share" => {
             for (index, address) in body.addresses.iter().enumerate() {
                 let address = wire::canon(address);
-                if address.is_empty() {
+                if address.is_empty() || world.quiet.contains(&address) {
                     continue;
                 }
                 let name = body
@@ -637,13 +704,16 @@ fn give_devices(
     body: &Body,
     shared: &HashSet<String>,
     pending: &HashSet<String>,
+    quiet: &HashSet<String>,
 ) {
     let wanted: Vec<String> = body
         .addresses
         .iter()
         .map(|address| wire::canon(address))
         .filter(|address| {
-            !address.is_empty() && (shared.contains(address) || pending.contains(address))
+            !address.is_empty()
+                && !quiet.contains(address)
+                && (shared.contains(address) || pending.contains(address))
         })
         .collect();
     let held = crate::bluetooth::connected_ones(&wanted);
@@ -704,7 +774,7 @@ impl World {
             return false;
         }
         self.seen_ids.push_back(id.to_string());
-        while self.seen_ids.len() > 64 {
+        while self.seen_ids.len() > 1024 {
             self.seen_ids.pop_front();
         }
         true
@@ -816,13 +886,34 @@ fn revoke(
 fn save_peers(path: &Path, peers: &[SavedPeer]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
     }
     let text = serde_json::to_string_pretty(&PeersFile {
         peers: peers.to_vec(),
     })
     .map_err(|err| io::Error::new(ErrorKind::InvalidData, err.to_string()))?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text + "\n")?;
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all((text + "\n").as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&tmp, text + "\n")?;
+    }
     fs::rename(tmp, path)
 }
 
@@ -1206,18 +1297,19 @@ unsafe extern "C" fn browse_reply(
             context,
         )
     };
-    if err == 0 && !sd.is_null() {
-        if let Ok(mut slots) = shared.resolves.lock() {
-            slots.push(Resolve {
-                sd: sd as usize,
-                instance,
-                done: false,
-                error: false,
-                key: None,
-                host: String::new(),
-                port: 0,
-            });
-        }
+    if err == 0
+        && !sd.is_null()
+        && let Ok(mut slots) = shared.resolves.lock()
+    {
+        slots.push(Resolve {
+            sd: sd as usize,
+            instance,
+            done: false,
+            error: false,
+            key: None,
+            host: String::new(),
+            port: 0,
+        });
     }
     std::mem::forget(shared);
 }
@@ -1239,19 +1331,19 @@ unsafe extern "C" fn resolve_reply(
         return;
     }
     let shared = unsafe { Arc::from_raw(context as *const Shared) };
-    if let Ok(mut slots) = shared.resolves.lock() {
-        if let Some(slot) = slots.iter_mut().find(|slot| slot.sd == sd as usize) {
-            slot.done = true;
-            if error == 0 {
-                slot.host = c_string(hosttarget);
-                slot.port = u16::from_be(port);
-                if !txt.is_null() {
-                    let txt = unsafe { std::slice::from_raw_parts(txt, txt_len as usize) };
-                    slot.key = txt_key(txt);
-                }
-            } else {
-                slot.error = true;
+    if let Ok(mut slots) = shared.resolves.lock()
+        && let Some(slot) = slots.iter_mut().find(|slot| slot.sd == sd as usize)
+    {
+        slot.done = true;
+        if error == 0 {
+            slot.host = c_string(hosttarget);
+            slot.port = u16::from_be(port);
+            if !txt.is_null() {
+                let txt = unsafe { std::slice::from_raw_parts(txt, txt_len as usize) };
+                slot.key = txt_key(txt);
             }
+        } else {
+            slot.error = true;
         }
     }
     std::mem::forget(shared);
@@ -1352,8 +1444,17 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use super::{accepted, load_peers, revoke, save_peers, saved_from};
+    use super::{load_peers, revoke, save_peers, saved_from};
     use crate::wire::{self, Identity};
+
+    #[cfg(target_os = "macos")]
+    use super::accepted;
+
+    #[cfg(not(target_os = "macos"))]
+    fn accepted(stream: TcpStream) -> TcpStream {
+        let _ = stream.set_nonblocking(false);
+        stream
+    }
 
     #[test]
     fn a_socket_from_the_listener_waits_for_the_rest_of_a_frame() {

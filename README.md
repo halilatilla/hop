@@ -83,7 +83,7 @@ For a bug, open a [GitHub issue](https://github.com/halilatilla/hop/issues). Inc
 
 ## Privacy
 
-The two Macs talk on the local network. You trust a Mac by matching the codes. Messages between the Macs are signed. Hop has no account, no cloud service, and no telemetry.
+The two Macs talk on the local network. You trust a Mac by matching the codes. Messages between the Macs are signed but not encrypted. Hop has no account, no cloud service, and no telemetry.
 
 ## Build
 
