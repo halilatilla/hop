@@ -10,7 +10,7 @@
 
 Hop lives in the menu bar. A keyboard, mouse, or pair of AirPods stays paired in Bluetooth on both Macs. Hop only changes which Mac the device is connected to.
 
-There is no Apple Account, iCloud, or other account. Trust is local: you compare a short code on the two Macs and choose **Codes match**.
+There is no Apple Account, iCloud, or other account. Trust is local: you compare a code on the two Macs and choose **Codes match**.
 
 ## Does this Mac work?
 
@@ -20,7 +20,7 @@ Pair each device once in **System Settings → Bluetooth**, on both Macs. Hop do
 
 ## Install
 
-1. Download `Hop-<version>-macos-arm64.zip` from [Releases](https://github.com/halilatilla/hop/releases). The current file is [Hop-0.2.3-macos-arm64.zip](https://github.com/halilatilla/hop/releases/download/v0.2.3/Hop-0.2.3-macos-arm64.zip).
+1. Download `Hop-<version>-macos-arm64.zip` from [Releases](https://github.com/halilatilla/hop/releases). The current file is [Hop-0.2.4-macos-arm64.zip](https://github.com/halilatilla/hop/releases/download/v0.2.4/Hop-0.2.4-macos-arm64.zip).
 2. Unzip it and move Hop into Applications. Replace the copy that is already there.
 3. Open Hop. This build is ad-hoc signed, not notarized, so macOS says it could not verify the app. Click Done, then open **System Settings → Privacy & Security** and click **Open Anyway**.
 
@@ -36,9 +36,9 @@ Quit the old Hop from its menu bar before opening the new one. There is no autom
 
 1. Install and open Hop on both Macs.
 2. Leave both Macs awake, on the same local network.
-3. Each menu shows a short code next to the other Mac.
+3. Each menu shows a code next to the other Mac.
 4. Compare the codes. The same two Macs show the same code.
-5. Choose **Codes match** only when the codes are the same. Hop asks you to confirm before that Mac is trusted. If more than one other Mac is nearby, the menu waits until only one is listed.
+5. Choose **Codes match** for the Mac whose code matches. Hop asks you to confirm before that Mac is trusted. Each Mac is listed once, so you can choose when more than one is nearby.
 6. Hop remembers that Mac. The two Macs can then move devices.
 
 The menu bar reads **Allow** until this is done. Choosing **Codes match** only trusts that Mac on this one. Do it on both Macs.

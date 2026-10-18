@@ -103,7 +103,6 @@ pub struct Body {
 
 pub enum Reply {
     Message(&'static str),
-    Connect,
     Give,
 }
 
@@ -141,8 +140,6 @@ pub fn reply(
     match request_op {
         "take" if !allowed || !fresh || !named || !all_paired => Reply::Message("refuse"),
         "take" => Reply::Message("accept"),
-        "released" if allowed && fresh && named && all_paired => Reply::Connect,
-        "released" => Reply::Message("failed"),
         "share" | "unshare" if allowed && fresh && named => Reply::Message("kept"),
         "want" if allowed && fresh && named => Reply::Give,
         "want" | "share" | "unshare" => Reply::Message("refuse"),
@@ -210,9 +207,14 @@ pub fn pair_code(left: &[u8; 32], right: &[u8; 32]) -> String {
     hasher.update(first);
     hasher.update(second);
     let digest = hasher.finalize();
-    let number = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000;
-    let text = format!("{number:06}");
-    format!("{} {}", &text[..3], &text[3..])
+    let text = hex(&digest[..8]);
+    format!(
+        "{} {} {} {}",
+        &text[0..4],
+        &text[4..8],
+        &text[8..12],
+        &text[12..16]
+    )
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -274,7 +276,7 @@ mod tests {
         ));
         assert!(matches!(
             reply("released", false, true, &mouse, &["aa-bb".into()]),
-            Reply::Message("failed")
+            Reply::Message("refuse")
         ));
     }
 
@@ -295,7 +297,7 @@ mod tests {
         ));
         assert!(matches!(
             reply("released", true, true, &mouse, &["aa-bb".into()]),
-            Reply::Connect
+            Reply::Message("refuse")
         ));
         let mouse = paired("aa-bb-cc-dd-ee-ff");
         assert!(matches!(
@@ -409,7 +411,9 @@ mod tests {
         let other = [3u8; 32];
         assert_eq!(pair_code(&left, &right), pair_code(&right, &left));
         assert_ne!(pair_code(&left, &right), pair_code(&left, &other));
-        assert_eq!(pair_code(&left, &right).len(), 7);
+        let code = pair_code(&left, &right);
+        assert_eq!(code.len(), 19);
+        assert!(code.chars().all(|ch| ch.is_ascii_hexdigit() || ch == ' '));
     }
 
     #[test]
