@@ -41,10 +41,13 @@ pub enum StayReason {
     NeedsAllow,
     Crowd,
     Refused,
+    #[allow(dead_code)]
     NotPaired,
     StillHere,
     NothingThere,
+    #[allow(dead_code)]
     NothingShared,
+    #[allow(dead_code)]
     AlreadyHere,
     Busy,
     StayedThere,
@@ -58,18 +61,21 @@ pub enum Outcome {
     Reconnected(Vec<String>),
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AskResult {
     Disconnect,
     Stay(StayReason),
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReleaseResult {
     Moved,
     Reconnect,
 }
 
+#[allow(dead_code)]
 pub fn after_ask(reply: Option<&str>) -> AskResult {
     match reply {
         Some("accept") => AskResult::Disconnect,
@@ -123,6 +129,7 @@ pub fn stay_after_read(kind: std::io::ErrorKind) -> StayReason {
     }
 }
 
+#[allow(dead_code)]
 pub fn after_release(reply: Option<&str>) -> ReleaseResult {
     match reply {
         Some("took") => ReleaseResult::Moved,
