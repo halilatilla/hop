@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+Trusting a Mac asks you to confirm the name and the code. Hop only connects devices already paired on this Mac. A device you keep on this Mac stays here.
+
 ## 0.2.2
 
 **Forget this Mac** removes the trusted Mac on this computer. Compare the codes again before the next move.
