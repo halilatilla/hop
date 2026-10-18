@@ -45,6 +45,7 @@ pub enum Seen {
 
 struct Sight {
     instance: String,
+    interface: u32,
     key: Option<[u8; 32]>,
     host: String,
     port: u16,
@@ -93,7 +94,18 @@ impl ConnectionGuard {
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Release);
+        let mut current = ACTIVE_CONNECTIONS.load(Ordering::Acquire);
+        while current > 0 {
+            match ACTIVE_CONNECTIONS.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 
@@ -379,19 +391,25 @@ pub fn set_paired(addresses: HashSet<String>) {
     }
 }
 
-pub fn target() -> Option<Target> {
-    let world = world()?;
-    let world = world.lock().ok()?;
+/// Every way to reach the one trusted Mac. Empty when that Mac is missing or
+/// more than one trusted Mac is nearby.
+pub fn reach() -> Vec<Target> {
+    let Some(world) = world() else {
+        return Vec::new();
+    };
+    let Ok(world) = world.lock() else {
+        return Vec::new();
+    };
     let self_key = world.identity.public_key();
-    one_target(&world.sights, &world.allowed, self_key)
+    endpoints(&world.sights, &world.allowed, self_key)
 }
 
-fn one_target(
+fn endpoints(
     sights: &[Sight],
     allowed: &HashMap<[u8; 32], String>,
     self_key: [u8; 32],
-) -> Option<Target> {
-    let mut found: HashMap<[u8; 32], Target> = HashMap::new();
+) -> Vec<Target> {
+    let mut found = Vec::new();
     for sight in sights {
         let Some(key) = sight.key else {
             continue;
@@ -402,17 +420,26 @@ fn one_target(
         if sight.host.is_empty() || sight.port == 0 {
             continue;
         }
-        found.entry(key).or_insert(Target {
+        if found.iter().any(|target: &Target| target.key != key) {
+            return Vec::new();
+        }
+        if found
+            .iter()
+            .any(|target: &Target| target.host == sight.host && target.port == sight.port)
+        {
+            continue;
+        }
+        found.push(Target {
             key,
             host: sight.host.clone(),
             port: sight.port,
         });
     }
-    if found.len() == 1 {
-        found.into_values().next()
-    } else {
-        None
-    }
+    found
+}
+
+fn forget_interface(sights: &mut Vec<Sight>, instance: &str, interface: u32) {
+    sights.retain(|sight| sight.instance != instance || sight.interface != interface);
 }
 
 pub fn set_shared(addresses: HashSet<String>) {
@@ -484,18 +511,20 @@ pub fn announce(add: Vec<String>, names: Vec<String>, remove: Vec<String>) {
         return;
     }
     thread::spawn(move || {
-        let Some(target) = target() else {
+        let targets = reach();
+        if targets.is_empty() {
             return;
-        };
+        }
         let mut acked = Vec::new();
         if !remove.is_empty()
-            && let Ok(reply) = message(&target, "unshare", &remove, &[], Duration::from_secs(5))
+            && let Ok(reply) =
+                message_any(&targets, "unshare", &remove, &[], Duration::from_secs(5))
             && reply.op == "kept"
         {
             acked = remove;
         }
         if !add.is_empty() {
-            let _ = message(&target, "share", &add, &names, Duration::from_secs(5));
+            let _ = message_any(&targets, "share", &add, &names, Duration::from_secs(5));
         }
         if acked.is_empty() {
             return;
@@ -508,7 +537,7 @@ pub fn announce(add: Vec<String>, names: Vec<String>, remove: Vec<String>) {
     });
 }
 
-pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome {
+pub fn claim(targets: Vec<Target>, addresses: Vec<String>) -> crate::handoff::Outcome {
     use crate::handoff::{Outcome, StayReason, WantResult};
 
     let addresses: Vec<String> = addresses
@@ -519,6 +548,9 @@ pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome 
     if addresses.is_empty() {
         return Outcome::Stayed(StayReason::NothingThere);
     }
+    if targets.is_empty() {
+        return Outcome::Stayed(StayReason::CouldNotReach);
+    }
     let Some(_guard) = begin_move() else {
         return Outcome::Stayed(StayReason::Busy);
     };
@@ -528,7 +560,7 @@ pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome 
     let Ok(identity) = world.lock().map(|world| world.identity.clone()) else {
         return Outcome::Stayed(StayReason::CouldNotReach);
     };
-    let _ = message(&target, "share", &addresses, &[], Duration::from_secs(5));
+    let _ = message_any(&targets, "share", &addresses, &[], Duration::from_secs(5));
     let id = wire::new_id();
     let body = Body {
         op: "want".to_string(),
@@ -537,8 +569,8 @@ pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome 
         addresses: addresses.clone(),
         names: Vec::new(),
     };
-    let mut stream = match connect_host(&target.host, target.port) {
-        Ok(stream) => stream,
+    let (target, mut stream) = match connect_targets(&targets) {
+        Ok(connected) => connected,
         Err(_) => return Outcome::Stayed(StayReason::CouldNotReach),
     };
     nosigpipe(&stream);
@@ -591,6 +623,23 @@ pub fn claim(target: Target, addresses: Vec<String>) -> crate::handoff::Outcome 
             }
         }
     }
+}
+
+fn message_any(
+    targets: &[Target],
+    op: &str,
+    addresses: &[String],
+    names: &[String],
+    timeout: Duration,
+) -> Result<Body, String> {
+    let mut last = "could not connect".to_string();
+    for target in targets {
+        match message(target, op, addresses, names, timeout) {
+            Ok(body) => return Ok(body),
+            Err(err) => last = err,
+        }
+    }
+    Err(last)
 }
 
 fn message(
@@ -658,7 +707,7 @@ fn addresses_to_connect(asked: &[String], replied: &[String]) -> Vec<String> {
 
 fn handle_client(mut stream: TcpStream, world: Arc<Mutex<World>>, _guard: ConnectionGuard) {
     nosigpipe(&stream);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let Ok(bytes) = wire::read_frame(&mut stream) else {
         return;
@@ -841,11 +890,32 @@ impl World {
     }
 }
 
+fn connect_targets(targets: &[Target]) -> Result<(Target, TcpStream), String> {
+    let mut last = "could not connect".to_string();
+    for target in targets {
+        match connect_host(&target.host, target.port) {
+            Ok(stream) => return Ok((target.clone(), stream)),
+            Err(err) => last = err,
+        }
+    }
+    Err(last)
+}
+
+fn prefer_routable(addrs: Vec<std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
+    let routable: Vec<_> = addrs
+        .iter()
+        .copied()
+        .filter(|addr| !addr.ip().is_loopback())
+        .collect();
+    if routable.is_empty() { addrs } else { routable }
+}
+
 fn connect_host(host: &str, port: u16) -> Result<TcpStream, String> {
-    let mut addrs = (host, port)
+    let addrs = (host, port)
         .to_socket_addrs()
         .map_err(|err| err.to_string())?
         .collect::<Vec<_>>();
+    let mut addrs = prefer_routable(addrs);
     addrs.sort_by_key(|addr| addr.is_ipv6());
     let mut last = "could not connect".to_string();
     let mut tried = false;
@@ -1086,6 +1156,7 @@ struct Shared {
 struct Resolve {
     sd: usize,
     instance: String,
+    interface: u32,
     done: bool,
     error: bool,
     key: Option<[u8; 32]>,
@@ -1321,15 +1392,23 @@ unsafe extern "C" fn browse_reply(
     let shared = unsafe { Arc::from_raw(context as *const Shared) };
     if flags & ADDED == 0 {
         if let Ok(mut world) = shared.world.lock() {
-            world.sights.retain(|sight| sight.instance != instance);
+            forget_interface(&mut world.sights, &instance, interface_index);
+        }
+        if let Ok(mut slots) = shared.resolves.lock() {
+            for slot in slots.iter_mut() {
+                if slot.instance == instance && slot.interface == interface_index {
+                    slot.done = true;
+                    slot.error = true;
+                }
+            }
         }
         std::mem::forget(shared);
         return;
     }
     let in_flight = shared.resolves.lock().ok().is_some_and(|slots| {
-        slots
-            .iter()
-            .any(|slot| slot.instance == instance && !slot.done)
+        slots.iter().any(|slot| {
+            slot.instance == instance && slot.interface == interface_index && !slot.done
+        })
     });
     if in_flight {
         std::mem::forget(shared);
@@ -1367,6 +1446,7 @@ unsafe extern "C" fn browse_reply(
         slots.push(Resolve {
             sd: sd as usize,
             instance,
+            interface: interface_index,
             done: false,
             error: false,
             key: None,
@@ -1438,7 +1518,7 @@ fn finish_resolves(shared: &Shared) {
         if let Some(existing) = world
             .sights
             .iter_mut()
-            .find(|sight| sight.instance == slot.instance)
+            .find(|sight| sight.instance == slot.instance && sight.interface == slot.interface)
         {
             existing.key = slot.key;
             existing.host = slot.host;
@@ -1447,6 +1527,7 @@ fn finish_resolves(shared: &Shared) {
         } else {
             world.sights.push(Sight {
                 instance: slot.instance,
+                interface: slot.interface,
                 key: slot.key,
                 host: slot.host,
                 port: slot.port,
@@ -1643,16 +1724,22 @@ mod tests {
     }
 
     use super::{
-        ConnectionGuard, Sight, addresses_to_connect, one_target, peer_counts, trusted_names,
-        unknown_macs,
+        ConnectionGuard, Sight, addresses_to_connect, endpoints, forget_interface, peer_counts,
+        prefer_routable, trusted_names, unknown_macs,
     };
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn sight(instance: &str, mac: [u8; 32]) -> Sight {
+        sight_on(instance, mac, 1, "mac.local", 1)
+    }
+
+    fn sight_on(instance: &str, mac: [u8; 32], interface: u32, host: &str, port: u16) -> Sight {
         Sight {
             instance: instance.to_string(),
+            interface,
             key: Some(mac),
-            host: "mac.local".to_string(),
-            port: 1,
+            host: host.to_string(),
+            port,
             resolved: true,
         }
     }
@@ -1689,14 +1776,17 @@ mod tests {
         let sights = vec![sight("Kitchen", other), sight("Kitchen (2)", other)];
         let mut allowed = HashMap::new();
         allowed.insert(other, "Kitchen".to_string());
-        let target = one_target(&sights, &allowed, self_key).expect("one Mac");
+        let target = endpoints(&sights, &allowed, self_key)
+            .into_iter()
+            .next()
+            .expect("one Mac");
         assert_eq!(target.key, other);
         assert_eq!(target.port, 1);
 
         let second = key(2);
         let sights = vec![sight("Kitchen", other), sight("Office", second)];
         allowed.insert(second, "Office".to_string());
-        assert!(one_target(&sights, &allowed, self_key).is_none());
+        assert!(endpoints(&sights, &allowed, self_key).is_empty());
     }
 
     #[test]
@@ -1737,5 +1827,35 @@ mod tests {
         assert_eq!(guards.len(), 10);
         drop(guards);
         assert!(ConnectionGuard::try_acquire().is_some());
+    }
+
+    #[test]
+    fn a_move_keeps_the_other_path_when_one_interface_drops() {
+        let self_key = key(9);
+        let other = key(1);
+        let mut sights = vec![
+            sight_on("Kitchen", other, 1, "loop.local", 9),
+            sight_on("Kitchen", other, 14, "kitchen.local", 80),
+        ];
+        let mut allowed = HashMap::new();
+        allowed.insert(other, "Kitchen".to_string());
+        let paths = endpoints(&sights, &allowed, self_key);
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].host, "loop.local");
+        assert_eq!(paths[1].host, "kitchen.local");
+
+        forget_interface(&mut sights, "Kitchen", 1);
+        let paths = endpoints(&sights, &allowed, self_key);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].host, "kitchen.local");
+        assert_eq!(paths[0].port, 80);
+    }
+
+    #[test]
+    fn a_connection_skips_loopback_when_the_mac_has_a_real_address() {
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1);
+        let lan = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 1);
+        assert_eq!(prefer_routable(vec![loopback, lan]), vec![lan]);
+        assert_eq!(prefer_routable(vec![loopback]), vec![loopback]);
     }
 }

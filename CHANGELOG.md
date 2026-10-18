@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.6
+
+**Move here** still reaches the other Mac when one of its network connections drops.
+
 ## 0.2.5
 
 **Move here** works when the other Mac shows up more than once on the network.
